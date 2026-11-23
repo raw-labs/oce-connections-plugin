@@ -13,8 +13,8 @@ and is distributed under the [MIT license](LICENSE).
 - The PostHog catalog entry uses the [Composio toolkit documentation](https://docs.composio.dev/toolkits/posthog)
   and [logo](https://logos.composio.dev/api/posthog).
 
-OpenClaw is supplied by the host. Development qualifies the `2026.9.8` source build
-at `90d30a1178a79dddd92e6190b66b95d89dfb3ca8`, recorded with its archive checksum
-in [openclaw-host.json](openclaw-host.json). The published `2026.9.8` package is a
-different, unsupported snapshot; the already qualified published `2026.10.2` host
-remains admitted. TypeBox and Zod are bundled with their license notices in the build.
+The predecessor qualified OpenClaw `2026.9.8` at
+`90d30a1178a79dddd92e6190b66b95d89dfb3ca8` and published `2026.10.2`.
+See the predecessor's [host pin and archive checksum](https://github.com/raw-labs/openclaw-connections/blob/df4f430fdad5a78515d3272e766ea0e2e9e97875/openclaw-host.json).
+The successor uses [Zod](https://github.com/colinhacks/zod) (MIT) and
+[Node OAuth2 Server](https://github.com/node-oauth/node-oauth2-server) (MIT).

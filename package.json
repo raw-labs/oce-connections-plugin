@@ -1,7 +1,7 @@
 {
-  "name": "@raw-labs/openclaw-connections",
+  "name": "@raw-labs/oce-connections-plugin",
   "version": "0.3.1",
-  "description": "Native OpenClaw Connections UI and agent tools, using your own Composio project.",
+  "description": "OCE Connections service and provider-neutral CLI",
   "type": "module",
   "license": "MIT",
   "author": {
@@ -10,75 +10,41 @@
   },
   "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=24.16.0 <25 || >=26.1.0"
+    "node": ">=24.16.0"
   },
   "files": [
     "dist",
-    "assets",
+    "assets/catalog.json",
     "skills",
-    "openclaw.plugin.json",
+    "dev",
     "README.md",
-    "AGENTS.md",
     "RELEASING.md",
     "LICENSE",
     "NOTICE",
-    "THIRD_PARTY_NOTICES.md",
-    "openclaw-host.json"
+    "THIRD_PARTY_NOTICES.md"
   ],
-  "exports": {
-    ".": "./dist/index.js"
-  },
-  "peerDependencies": {
-    "openclaw": ">=2026.9.8"
-  },
-  "peerDependenciesMeta": {
-    "openclaw": {
-      "optional": true
-    }
-  },
   "dependencies": {
-    "typebox": "1.3.18",
+    "@node-oauth/oauth2-server": "5.3.1",
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@openclaw/codex": "2026.9.8",
-    "@types/jsdom": "21.1.7",
     "@types/node": "24.10.13",
     "esbuild": "0.27.4",
-    "jsdom": "26.1.0",
-    "openclaw": "2026.9.8",
-    "playwright": "1.63.0",
     "prettier": "3.9.7",
     "tsx": "4.23.13",
     "typescript": "6.0.3"
   },
   "scripts": {
-    "check": "node scripts/check-host.mjs && prettier --check . && tsc --noEmit && pnpm test",
-    "test": "node scripts/check-host.mjs && node --import tsx --test tests/*.test.ts",
+    "check": "prettier --check . && tsc --noEmit && pnpm test",
+    "test": "node --import tsx --test tests/*.test.ts",
     "build": "node scripts/build.mjs",
     "format": "prettier --write .",
-    "artifact": "pnpm build && npm pack --pack-destination .local",
-    "test:native": "node scripts/check-host.mjs && node --import tsx --test tests/native/*.test.ts",
-    "inspect:package": "node scripts/inspect-package.mjs",
-    "prepare:host": "node scripts/prepare-host.mjs"
-  },
-  "openclaw": {
-    "extensions": [
-      "./dist/index.js"
-    ],
-    "compat": {
-      "pluginApi": ">=2026.9.8",
-      "minGatewayVersion": "2026.9.8"
-    },
-    "build": {
-      "openclawVersion": "2026.9.8",
-      "pluginSdkVersion": "2026.9.8"
-    },
-    "controlUi": "./src/control-ui.ts"
+    "artifact": "pnpm build && mkdir -p .local && npm pack --pack-destination .local",
+    "inspect:package": "node scripts/inspect-package.mjs"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/raw-labs/openclaw-connections.git"
+    "url": "git+https://github.com/raw-labs/oce-connections-plugin.git"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"

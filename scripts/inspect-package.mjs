@@ -1,88 +1,25 @@
-import { assertPinnedHost } from "./pinned-host.mjs";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { readFile, mkdir } from "node:fs/promises";
-import { promisify } from "node:util";
-import { posix } from "node:path";
-const execute = promisify(execFile);
-const pkg = JSON.parse(await readFile("package.json", "utf8"));
-const manifest = JSON.parse(await readFile("openclaw.plugin.json", "utf8"));
-assert.equal(pkg.name, "@raw-labs/openclaw-connections");
-assert.equal(manifest.id, "openclaw-connections");
-assert.equal(manifest.version, pkg.version);
-const { pin } = await assertPinnedHost();
-assert.equal(pkg.devDependencies.openclaw, pin.version);
-assert.equal(pkg.devDependencies["@openclaw/codex"], pin.version);
-assert.equal(pkg.peerDependencies.openclaw, `>=${pin.version}`);
-assert.equal(pkg.openclaw.compat.pluginApi, `>=${pin.version}`);
-assert.equal(pkg.openclaw.build.openclawVersion, pin.version);
-assert.equal(
-  pkg.openclaw.compat.minGatewayVersion,
-  pkg.devDependencies.openclaw,
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync } from "node:fs";
+
+const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+mkdirSync(".local", { recursive: true });
+const [packed] = JSON.parse(
+  execFileSync("npm", ["pack", "--json", "--pack-destination", ".local"], {
+    encoding: "utf8",
+  }),
 );
-assert.equal(pkg.openclaw.build.pluginSdkVersion, pkg.devDependencies.openclaw);
-assert.equal(pkg.publishConfig.registry, "https://npm.pkg.github.com");
-assert.notEqual(pkg.private, true);
-await mkdir(".local", { recursive: true });
-const packs = JSON.parse(
-  (await execute("npm", ["pack", "--json", "--pack-destination", ".local"]))
-    .stdout,
-);
-assert.equal(packs.length, 1);
-const pack = packs[0];
-for (const file of pack.files) {
-  assert.match(
-    file.path,
-    /^(?:dist\/|assets\/|skills\/|openclaw-host\.json$|package\.json$|openclaw\.plugin\.json$|README\.md$|AGENTS\.md$|RELEASING\.md$|LICENSE$|NOTICE$|THIRD_PARTY_NOTICES\.md$)/,
-  );
-  assert.doesNotMatch(
-    file.path,
-    /(?:^|\/)(?:node_modules|\.env|\.local|tests|src|state)(?:\/|$)/,
-  );
-}
+assert.equal(packed.name, "@raw-labs/oce-connections-plugin");
+assert.equal(packed.version, manifest.version);
+const paths = new Set(packed.files.map(({ path }) => path));
 for (const path of [
-  "openclaw-host.json",
-  "dist/index.js",
+  "dist/catalog.js",
   "assets/catalog.json",
   "skills/connections/SKILL.md",
-  "README.md",
-  "AGENTS.md",
-  "RELEASING.md",
   "LICENSE",
   "NOTICE",
   "THIRD_PARTY_NOTICES.md",
-  "dist/licenses/zod.txt",
-  "dist/licenses/typebox.txt",
-]) {
-  assert.ok(
-    pack.files.some((file) => file.path === path),
-    `Missing ${path}`,
-  );
-}
-assert.ok(
-  pack.files.some(
-    (file) =>
-      file.path.startsWith("dist/control-ui/") && file.path.endsWith(".js"),
-  ),
-);
-const packagedPaths = new Set(pack.files.map((file) => file.path));
-for (const path of [
-  "README.md",
-  "AGENTS.md",
-  "RELEASING.md",
-  "THIRD_PARTY_NOTICES.md",
-]) {
-  const markdown = await readFile(path, "utf8");
-  for (const match of markdown.matchAll(/\[[^\]]*\]\(([^\s)]+)\)/g)) {
-    const target = match[1];
-    if (/^(?:[a-z]+:|#|\/)/i.test(target)) continue;
-    const relative = decodeURIComponent(target.split("#")[0]);
-    assert.ok(
-      packagedPaths.has(posix.join(posix.dirname(path), relative)),
-      `Broken packaged link in ${path}: ${target}`,
-    );
-  }
-}
-process.stdout.write(
-  `Verified ${pack.filename}: ${pack.files.length} files, ${pack.shasum}\n`,
-);
+])
+  assert.ok(paths.has(path), `Missing package entry: ${path}`);
+for (const path of paths)
+  assert.ok(!path.startsWith("src/") && !path.startsWith("tests/"), path);

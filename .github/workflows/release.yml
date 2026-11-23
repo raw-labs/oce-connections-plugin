@@ -45,7 +45,6 @@ jobs:
   publish:
     needs: release
     if: ${{ !cancelled() && (needs.release.outputs.created == 'true' || inputs.tag != '') }}
-    # Match CI's Depot runner for SDK qualification and package verification.
     runs-on: depot-ubuntu-24.04-arm-8
     timeout-minutes: 45
     permissions:
@@ -58,7 +57,6 @@ jobs:
       - uses: ./.github/actions/setup
       - run: pnpm check
       - run: pnpm build
-      - run: pnpm test:native
       - run: pnpm inspect:package
       - run: git diff --exit-code
       - name: Verify release version
@@ -74,7 +72,7 @@ jobs:
         run: |
           version=$(node -p 'require("./package.json").version')
           mkdir -p .local/registry
-          if npm pack "@raw-labs/openclaw-connections@$version" --json --pack-destination .local/registry > .local/registry-result.json; then
+          if npm pack "@raw-labs/oce-connections-plugin@$version" --json --pack-destination .local/registry > .local/registry-result.json; then
             cmp .local/*.tgz .local/registry/*.tgz
           else
             # npm reports E404 for a missing package, ETARGET for a missing
@@ -89,15 +87,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NODE_AUTH_TOKEN: ${{ github.token }}
         run: |
-          gh api "orgs/${GITHUB_REPOSITORY_OWNER}/packages/npm/openclaw-connections" |
+          gh api "orgs/${GITHUB_REPOSITORY_OWNER}/packages/npm/oce-connections-plugin" |
           jq --exit-status '.visibility == "private"'
           version=$(node -p 'require("./package.json").version')
           # The npm source link comes from registry package metadata, not the
           # optional repository object in GitHub's generic Packages response.
-          npm view "@raw-labs/openclaw-connections@$version" repository.url --json > .local/published-repository.json
+          npm view "@raw-labs/oce-connections-plugin@$version" repository.url --json > .local/published-repository.json
           node -e 'const url = require("./.local/published-repository.json"); if (typeof url !== "string" || url.replace(/^git\+/, "").replace(/\.git$/, "") !== `https://github.com/${process.env.GITHUB_REPOSITORY}`) process.exit(1)'
           mkdir -p .local/registry
-          npm pack "@raw-labs/openclaw-connections@$version" --pack-destination .local/registry
+          npm pack "@raw-labs/oce-connections-plugin@$version" --pack-destination .local/registry
           cmp .local/*.tgz .local/registry/*.tgz
       - name: Attach installable release artifact
         env:
