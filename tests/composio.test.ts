@@ -20,7 +20,6 @@ const account = (overrides: Record<string, unknown> = {}) => ({
   toolkit: { slug: binding.toolkit },
   auth_config: { id: binding.authConfigurationId },
   status: "ACTIVE",
-  alias: "Work account",
   ...overrides,
 });
 const execution = {
@@ -172,7 +171,7 @@ await test("same-service setup creates distinct hosted accounts with the generic
   );
 });
 
-await test("managed and custom authentication share the same generic adapter and exact paginated selection", async () => {
+await test("managed auth lookup reuses only an enabled configuration for the exact toolkit", async () => {
   const managed = {
     id: "managed",
     toolkit: { slug: "example" },
@@ -180,46 +179,37 @@ await test("managed and custom authentication share the same generic adapter and
     status: "ENABLED",
   };
   const found = fixture([
-    Response.json({ items: [], next_cursor: "next" }),
+    Response.json({
+      items: [
+        { ...managed, id: "custom", is_composio_managed: false },
+        { ...managed, id: "disabled", status: "DISABLED" },
+        { ...managed, id: "foreign", toolkit: { slug: "another" } },
+      ],
+      next_cursor: "next",
+    }),
     Response.json({ items: [managed], next_cursor: null }),
   ]);
-  assert.deepEqual(
-    await found.provider.resolveAuthConfiguration(
-      { toolkit: "example", auth: { kind: "managed" } },
-      signal(),
-    ),
-    { id: "managed", toolkit: "example", auth: { kind: "managed" } },
+  assert.equal(
+    await found.provider.resolveManagedAuthConfiguration("example", signal()),
+    "managed",
   );
   assert.ok(found.calls[1]);
   assert.equal(new URL(found.calls[1].url).searchParams.get("cursor"), "next");
-  const custom = {
-    id: "custom",
-    toolkit: { slug: "another_service" },
-    is_composio_managed: false,
-    auth_scheme: "API_KEY",
-    status: "ENABLED",
-  };
+
   const created = fixture([
     Response.json({ items: [] }),
-    Response.json({ auth_config: custom }),
-    Response.json({ items: [custom] }),
+    Response.json({ auth_config: { ...managed, status: undefined } }),
+    Response.json({ items: [managed] }),
   ]);
-  const result = await created.provider.resolveAuthConfiguration(
-    { toolkit: "another_service", auth: { kind: "custom", scheme: "API_KEY" } },
-    signal(),
+  assert.equal(
+    await created.provider.resolveManagedAuthConfiguration("example", signal()),
+    "managed",
   );
-  assert.equal(result.id, "custom");
-  assert.deepEqual(created.calls[1]?.body, {
-    toolkit: { slug: "another_service" },
-    auth_config: {
-      type: "use_custom_auth",
-      authScheme: "API_KEY",
-      credentials: {},
-    },
-  });
+  assert.deepEqual(created.calls[1]?.body, { toolkit: { slug: "example" } });
+  assert.equal(created.calls[2]?.method, "GET");
 });
 
-await test("inspection and cleanup reject a mismatched owner before deleting; cleanup preserves its revocation receipt", async () => {
+await test("inspection rejects any mismatched account binding", async () => {
   for (const mismatch of [
     { user_id: "foreign_user" },
     { id: "foreign_account" },
@@ -228,186 +218,18 @@ await test("inspection and cleanup reject a mismatched owner before deleting; cl
   ]) {
     const { provider, calls } = fixture([Response.json(account(mismatch))]);
     await assert.rejects(
-      provider.deleteAccount(binding, signal()),
+      provider.inspectAccount(binding, signal()),
       (error: unknown) =>
         error instanceof ConnectorProviderError &&
         error.code === "connector_account_mismatch",
     );
     assert.equal(calls.length, 1);
   }
-  const { provider, calls } = fixture([
-    Response.json(account()),
-    Response.json({ success: true, revoke_job_id: "revoke_job" }),
-  ]);
-  assert.deepEqual(await provider.deleteAccount(binding, signal()), {
-    status: "deleted",
-    revocationJobId: "revoke_job",
+  const { provider } = fixture([Response.json(account())]);
+  assert.deepEqual(await provider.inspectAccount(binding, signal()), {
+    binding,
+    state: "active",
   });
-  assert.equal(calls[1]?.method, "DELETE");
-  assert.equal(
-    new URL(calls[1].url).searchParams.get("revoke_on_delete"),
-    "true",
-  );
-});
-
-await test("identity verification forwards an opaque session to the configured API, never fetches a callback URL", async () => {
-  const { provider, calls } = fixture([
-    Response.json({
-      connected_account_id: binding.accountId,
-      toolkit_slug: binding.toolkit,
-    }),
-  ]);
-  assert.deepEqual(
-    await provider.completeIdentity(
-      {
-        sessionRef: "https://provider.example.test/session",
-        subjectId: binding.subjectId,
-      },
-      signal(),
-    ),
-    { accountId: binding.accountId, toolkit: binding.toolkit },
-  );
-  assert.equal(
-    calls[0]?.url,
-    "https://backend.composio.dev/api/v3.1/connected_accounts/complete_auth",
-  );
-  assert.deepEqual(calls[0].body, {
-    session_uri: "https://provider.example.test/session",
-    user_id: binding.subjectId,
-  });
-});
-
-await test("identity verification preserves the authenticated subject across concurrent setup accounts", async () => {
-  const { provider, calls } = fixture([
-    Response.json({
-      connected_account_id: "ca_second",
-      toolkit_slug: "second_service",
-    }),
-    Response.json({
-      connected_account_id: "ca_first",
-      toolkit_slug: "first_service",
-    }),
-  ]);
-  const second = await provider.completeIdentity(
-    { sessionRef: "opaque-second", subjectId: binding.subjectId },
-    signal(),
-  );
-  const first = await provider.completeIdentity(
-    { sessionRef: "opaque-first", subjectId: binding.subjectId },
-    signal(),
-  );
-  assert.deepEqual(
-    [second, first],
-    [
-      { accountId: "ca_second", toolkit: "second_service" },
-      { accountId: "ca_first", toolkit: "first_service" },
-    ],
-  );
-  assert.deepEqual(
-    calls.map((call) => call.body),
-    [
-      { session_uri: "opaque-second", user_id: binding.subjectId },
-      { session_uri: "opaque-first", user_id: binding.subjectId },
-    ],
-  );
-});
-
-await test("identity redemption omits provider prose from public problems without changing typed status or completion", async () => {
-  const cases = [
-    {
-      status: 400,
-      publicStatus: 400,
-      code: "connector_provider_rejected",
-      completion: "rejected",
-    },
-    {
-      status: 403,
-      publicStatus: 503,
-      code: "connector_provider_authentication",
-      completion: "rejected",
-    },
-    {
-      status: 429,
-      publicStatus: 429,
-      code: "connector_provider_rate_limited",
-      completion: "rejected",
-    },
-    {
-      status: 503,
-      publicStatus: 503,
-      code: "connector_provider_unknown_outcome",
-      completion: "outcome_unknown",
-    },
-  ];
-  for (const sessionRef of [
-    "urn:composio:one-use-proof",
-    "https://session.example.test/short-proof",
-  ])
-    for (const expected of cases) {
-      const encoded = encodeURIComponent(sessionRef);
-      const { provider, calls } = fixture([
-        Response.json(
-          {
-            error: {
-              message: `Identity protocol diagnostic: ${sessionRef}; encoded=${encoded}`,
-            },
-          },
-          { status: expected.status },
-        ),
-      ]);
-      await assert.rejects(
-        provider.completeIdentity(
-          { sessionRef, subjectId: binding.subjectId },
-          signal(),
-        ),
-        (error: unknown) => {
-          assert.ok(error instanceof ConnectorProviderError);
-          assert.equal(error.code, expected.code);
-          assert.equal(error.completion, expected.completion);
-          assert.ok(!error.message.includes(sessionRef));
-          assert.ok(!error.message.includes(encoded));
-          assert.doesNotMatch(error.message, /Identity protocol diagnostic/);
-          return true;
-        },
-      );
-      assert.equal(calls.length, 1);
-    }
-});
-
-await test("failed or expired identity redemption is never repeated or tried with another subject", async () => {
-  for (const status of [400, 404]) {
-    const { provider, calls } = fixture([
-      Response.json(
-        { error: { message: "Verification rejected." } },
-        { status },
-      ),
-    ]);
-    await assert.rejects(
-      provider.completeIdentity(
-        { sessionRef: "one-use-session", subjectId: binding.subjectId },
-        signal(),
-      ),
-      (error: unknown) =>
-        error instanceof ConnectorProviderError &&
-        error.code === "connector_provider_rejected" &&
-        error.completion === "rejected",
-    );
-    assert.equal(calls.length, 1);
-  }
-  const { provider, calls } = fixture([
-    new TypeError("Response lost after session redemption"),
-  ]);
-  await assert.rejects(
-    provider.completeIdentity(
-      { sessionRef: "one-use-session", subjectId: binding.subjectId },
-      signal(),
-    ),
-    (error: unknown) =>
-      error instanceof ConnectorProviderError &&
-      error.completion === "outcome_unknown" &&
-      error.retry.strategy === "reconcile",
-  );
-  assert.equal(calls.length, 1);
 });
 
 await test("malformed account disablement cannot be interpreted as active", async () => {

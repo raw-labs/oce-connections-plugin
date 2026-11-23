@@ -3,7 +3,7 @@ import {
   type FailureDefinition,
   type RetryGuidance,
 } from "../shared/errors.js";
-import type { ConnectorAuth, ConnectorJson } from "./catalog.js";
+import type { ConnectorJson } from "./catalog.js";
 
 export interface ConnectorProviderBinding {
   accountId: string;
@@ -14,7 +14,6 @@ export interface ConnectorProviderBinding {
 
 export interface ConnectorProviderAccount {
   binding: ConnectorProviderBinding;
-  label: string | null;
   state: "pending" | "active" | "reconnect_required" | "failed";
 }
 
@@ -107,31 +106,22 @@ export type ConnectorProviderExecution =
     };
 
 export interface ConnectorProvider {
-  readonly id: string;
-  resolveAuthConfiguration(
-    input: { toolkit: string; auth: ConnectorAuth },
+  resolveManagedAuthConfiguration(
+    toolkit: string,
     signal: AbortSignal,
-  ): Promise<{ id: string; toolkit: string; auth: ConnectorAuth }>;
+  ): Promise<string>;
   createSetup(
     input: {
       authConfigurationId: string;
       subjectId: string;
-      callbackUrl?: string;
+      callbackUrl: string;
     },
     signal: AbortSignal,
   ): Promise<{ accountId: string; connectUrl: string; expiresAt: string }>;
-  completeIdentity(
-    input: { sessionRef: string; subjectId: string },
-    signal: AbortSignal,
-  ): Promise<{ accountId: string; toolkit: string }>;
   inspectAccount(
     binding: ConnectorProviderBinding,
     signal: AbortSignal,
   ): Promise<ConnectorProviderAccount | null>;
-  deleteAccount(
-    binding: ConnectorProviderBinding,
-    signal: AbortSignal,
-  ): Promise<{ status: "absent" | "deleted"; revocationJobId: string | null }>;
   /** Dispatch only; the service verifies account/grants immediately before its durable dispatch claim. */
   execute(
     input: {

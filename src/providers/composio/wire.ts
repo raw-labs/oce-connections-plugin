@@ -1,5 +1,5 @@
 import { parseJson } from "../../shared/json.js";
-import type { ConnectorAuth, ConnectorJson } from "../../types/catalog.js";
+import type { ConnectorJson } from "../../types/catalog.js";
 import {
   ConnectorProviderError,
   type ConnectorProviderAccount,
@@ -60,7 +60,7 @@ export function readAuthConfiguration(
   value: unknown,
   completion: ConnectorProviderCompletion,
   parentToolkit?: unknown,
-): { id: string; toolkit: string; auth: ConnectorAuth; enabled: boolean } {
+): { id: string; toolkit: string; managed: boolean; enabled: boolean } {
   const item = record(value, completion);
   const toolkit = record(item.toolkit ?? parentToolkit, completion);
   if (typeof item.is_composio_managed !== "boolean")
@@ -68,9 +68,7 @@ export function readAuthConfiguration(
   return {
     id: text(item.id, completion),
     toolkit: text(toolkit.slug, completion),
-    auth: item.is_composio_managed
-      ? { kind: "managed" }
-      : { kind: "custom", scheme: text(item.auth_scheme, completion) },
+    managed: item.is_composio_managed,
     enabled: item.status === "ENABLED",
   };
 }
@@ -111,7 +109,6 @@ export function readAccount(value: unknown): ConnectorProviderAccount {
       authConfigurationId: text(auth.id, "not_started"),
       subjectId: text(item.user_id, "not_started"),
     },
-    label: optionalText(item.alias, "not_started", 300),
     state,
   };
 }

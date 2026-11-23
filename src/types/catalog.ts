@@ -5,5 +5,3 @@ export type ConnectorJson =
   | string
   | ConnectorJson[]
   | { [key: string]: ConnectorJson };
-export type ConnectorAuth =
-  { kind: "managed" } | { kind: "custom"; scheme: string };

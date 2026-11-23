@@ -3,7 +3,6 @@ import { providerDiagnostic } from "./diagnostics.js";
 
 export interface ComposioHttpOptions {
   apiKey: string;
-  beforeRequest?: () => Promise<void>;
   apiBaseUrl?: string;
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
@@ -16,7 +15,7 @@ export class ComposioHttp {
   readonly #fetch: typeof fetch;
   readonly #timeout: number;
   readonly #maximum: number;
-  constructor(private readonly options: ComposioHttpOptions) {
+  constructor(options: ComposioHttpOptions) {
     this.#baseUrl = new URL(
       options.apiBaseUrl ?? "https://backend.composio.dev",
     );
@@ -38,11 +37,10 @@ export class ComposioHttp {
   }
 
   async request(input: {
-    method: "GET" | "POST" | "DELETE";
+    method: "GET" | "POST";
     path: string;
     body?: object;
     missing?: boolean;
-    diagnostics?: "preserve" | "omit";
     signal: AbortSignal;
   }): Promise<{ missing: true } | { missing: false; data: unknown }> {
     if (input.signal.aborted)
@@ -77,7 +75,6 @@ export class ComposioHttp {
       input.signal,
       AbortSignal.timeout(this.#timeout),
     ]);
-    await this.options.beforeRequest?.();
     if (signal.aborted)
       throw new ConnectorProviderError(
         "connector_provider_cancelled",
@@ -118,11 +115,7 @@ export class ComposioHttp {
       throw transportFailure(input.method);
     }
     if (!response.ok)
-      throw httpFailure(
-        response,
-        input.diagnostics === "omit" ? null : this.diagnostic(data),
-        input.method,
-      );
+      throw httpFailure(response, this.diagnostic(data), input.method);
     return { missing: false, data };
   }
 
@@ -137,9 +130,7 @@ export class ComposioHttp {
   }
 }
 
-function transportFailure(
-  method: "GET" | "POST" | "DELETE",
-): ConnectorProviderError {
+function transportFailure(method: "GET" | "POST"): ConnectorProviderError {
   return method === "GET"
     ? new ConnectorProviderError(
         "connector_provider_unavailable",
@@ -155,7 +146,7 @@ function transportFailure(
 function httpFailure(
   response: Response,
   diagnostic: string | null,
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST",
 ): ConnectorProviderError {
   if (
     response.status >= 500 ||

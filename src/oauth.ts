@@ -281,15 +281,11 @@ export class ConnectionsOAuth {
         throw new HttpError(503, "connector_unconfigured");
       const authConfigurationId =
         configuredId ??
-        (await this.queue.run(
-          `toolkit:${connector.toolkitSlug}`,
-          async () =>
-            (
-              await this.provider.resolveAuthConfiguration(
-                { toolkit: connector.toolkitSlug, auth: connector.auth },
-                signal,
-              )
-            ).id,
+        (await this.queue.run(`toolkit:${connector.toolkitSlug}`, () =>
+          this.provider.resolveManagedAuthConfiguration(
+            connector.toolkitSlug,
+            signal,
+          ),
         ));
       const setup = await this.provider.createSetup(
         { authConfigurationId, subjectId, callbackUrl: callback.href },

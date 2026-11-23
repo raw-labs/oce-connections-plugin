@@ -100,7 +100,7 @@ export async function fixture(
       oauthClients: [
         {
           id: clientId,
-          connectorIds: ["github", "slack"],
+          connectorIds: ["github", "slack", "posthog"],
           secretEnv: "TEST_OCE_SECRET",
           redirectUris: [redirectUri],
         },
@@ -111,7 +111,7 @@ export async function fixture(
           redirectUris: [redirectUri],
         },
       ],
-      authConfigIds: { slack: "auth-slack" },
+      authConfigIds: { slack: "auth-slack", posthog: "auth-posthog" },
     }),
   );
   const serviceEnv = {

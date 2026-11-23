@@ -71,6 +71,15 @@ await test(
     const result = await readTokens(await tokenRequest(origin, fields));
     assert.equal((await tokenRequest(origin, fields)).status, 400);
 
+    const custom = await authorizeCode(origin, "posthog");
+    await readTokens(
+      await tokenRequest(origin, codeFields(custom.code, custom.verifier)),
+    );
+    const customBinding = [...provider.accounts.values()].find(
+      ({ toolkit }) => toolkit.slug === "posthog",
+    );
+    assert.equal(customBinding?.auth_config.id, "auth-posthog");
+
     const wrongPkce = await authorizeCode(origin, "slack");
     const wrongVerifier = "A".repeat(43);
     assert.equal(

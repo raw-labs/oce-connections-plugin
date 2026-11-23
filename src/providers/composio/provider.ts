@@ -1,4 +1,3 @@
-import type { ConnectorAuth } from "../../types/catalog.js";
 import {
   ConnectorProviderError,
   type ConnectorProvider,
@@ -28,40 +27,27 @@ export function createComposioProvider(
 }
 
 class ComposioProvider implements ConnectorProvider {
-  readonly id = "composio";
   constructor(private readonly http: ComposioHttp) {}
 
-  async resolveAuthConfiguration(
-    input: { toolkit: string; auth: ConnectorAuth },
+  async resolveManagedAuthConfiguration(
+    toolkit: string,
     signal: AbortSignal,
-  ): Promise<{ id: string; toolkit: string; auth: ConnectorAuth }> {
-    requireInputText(input.toolkit);
-    if (input.auth.kind === "custom") requireInputText(input.auth.scheme, 100);
-    const existing = (await this.#authConfigurations(input, signal))
-      .filter((candidate) => candidate.enabled && matchesAuth(candidate, input))
+  ): Promise<string> {
+    requireInputText(toolkit);
+    const existing = (await this.#authConfigurations(toolkit, signal))
+      .filter(
+        (candidate) =>
+          candidate.enabled &&
+          candidate.managed &&
+          candidate.toolkit === toolkit,
+      )
       .sort((left, right) => left.id.localeCompare(right.id))[0];
-    if (existing)
-      return {
-        id: existing.id,
-        toolkit: existing.toolkit,
-        auth: existing.auth,
-      };
+    if (existing) return existing.id;
     const response = await this.http.request({
       method: "POST",
       path: "/api/v3.1/auth_configs",
       signal,
-      body: {
-        toolkit: { slug: input.toolkit },
-        ...(input.auth.kind === "managed"
-          ? {}
-          : {
-              auth_config: {
-                type: "use_custom_auth",
-                authScheme: input.auth.scheme,
-                credentials: {},
-              },
-            }),
-      },
+      body: { toolkit: { slug: toolkit } },
     });
     if (response.missing) throw invalidResponse("outcome_unknown");
     const body = record(response.data, "outcome_unknown");
@@ -70,11 +56,12 @@ class ComposioProvider implements ConnectorProvider {
       "outcome_unknown",
       body.toolkit,
     );
-    if (!matchesAuth(created, input)) throw invalidResponse("outcome_unknown");
+    if (!created.managed || created.toolkit !== toolkit)
+      throw invalidResponse("outcome_unknown");
     // Creation omits status; verify its current enabled state instead of inventing it.
     let configurations: ReturnType<typeof readAuthConfiguration>[];
     try {
-      configurations = await this.#authConfigurations(input, signal);
+      configurations = await this.#authConfigurations(toolkit, signal);
     } catch (error) {
       if (!(error instanceof ConnectorProviderError)) throw error;
       throw new ConnectorProviderError(
@@ -86,9 +73,9 @@ class ComposioProvider implements ConnectorProvider {
     const verified = configurations.find(
       (candidate) => candidate.id === created.id,
     );
-    if (!verified || !verified.enabled || !matchesAuth(verified, input))
+    if (!verified?.enabled || !verified.managed || verified.toolkit !== toolkit)
       throw invalidResponse("outcome_unknown");
-    return { id: verified.id, toolkit: verified.toolkit, auth: verified.auth };
+    return verified.id;
   }
 
   async createSetup(
@@ -98,8 +85,7 @@ class ComposioProvider implements ConnectorProvider {
     requireInputText(input.authConfigurationId);
     requireInputText(input.subjectId);
     try {
-      if (input.callbackUrl !== undefined)
-        requireHttps(input.callbackUrl, "not_started");
+      requireHttps(input.callbackUrl, "not_started");
     } catch {
       throw new ConnectorProviderError(
         "connector_provider_request_invalid",
@@ -114,7 +100,7 @@ class ComposioProvider implements ConnectorProvider {
       body: {
         auth_config_id: input.authConfigurationId,
         user_id: input.subjectId,
-        ...(input.callbackUrl ? { callback_url: input.callbackUrl } : {}),
+        callback_url: input.callbackUrl,
       },
     });
     if (response.missing) throw invalidResponse("outcome_unknown");
@@ -135,27 +121,6 @@ class ComposioProvider implements ConnectorProvider {
     };
   }
 
-  async completeIdentity(
-    input: Parameters<ConnectorProvider["completeIdentity"]>[0],
-    signal: AbortSignal,
-  ): ReturnType<ConnectorProvider["completeIdentity"]> {
-    requireInputText(input.subjectId);
-    requireInputText(input.sessionRef, 16_384);
-    const response = await this.http.request({
-      method: "POST",
-      path: "/api/v3.1/connected_accounts/complete_auth",
-      diagnostics: "omit",
-      signal,
-      body: { session_uri: input.sessionRef, user_id: input.subjectId },
-    });
-    if (response.missing) throw invalidResponse("outcome_unknown");
-    const body = record(response.data, "outcome_unknown");
-    return {
-      accountId: text(body.connected_account_id, "outcome_unknown"),
-      toolkit: text(body.toolkit_slug, "outcome_unknown"),
-    };
-  }
-
   async inspectAccount(
     binding: ConnectorProviderBinding,
     signal: AbortSignal,
@@ -171,27 +136,6 @@ class ComposioProvider implements ConnectorProvider {
     const account = readAccount(response.data);
     assertBinding(account.binding, binding);
     return account;
-  }
-
-  async deleteAccount(
-    binding: ConnectorProviderBinding,
-    signal: AbortSignal,
-  ): ReturnType<ConnectorProvider["deleteAccount"]> {
-    if (!(await this.inspectAccount(binding, signal)))
-      return { status: "absent", revocationJobId: null };
-    const response = await this.http.request({
-      method: "DELETE",
-      path: `/api/v3.1/connected_accounts/${encodeURIComponent(binding.accountId)}?revoke_on_delete=true`,
-      missing: true,
-      signal,
-    });
-    if (response.missing) return { status: "absent", revocationJobId: null };
-    const body = record(response.data, "outcome_unknown");
-    if (body.success !== true) throw invalidResponse("outcome_unknown");
-    return {
-      status: "deleted",
-      revocationJobId: optionalText(body.revoke_job_id, "outcome_unknown"),
-    };
   }
 
   async execute(
@@ -262,7 +206,7 @@ class ComposioProvider implements ConnectorProvider {
   }
 
   async #authConfigurations(
-    input: { toolkit: string; auth: ConnectorAuth },
+    toolkit: string,
     signal: AbortSignal,
   ): Promise<ReturnType<typeof readAuthConfiguration>[]> {
     const values: ReturnType<typeof readAuthConfiguration>[] = [];
@@ -270,8 +214,8 @@ class ComposioProvider implements ConnectorProvider {
     let cursor: string | null = null;
     do {
       const query = new URLSearchParams({
-        toolkit_slug: input.toolkit,
-        is_composio_managed: input.auth.kind === "managed" ? "true" : "false",
+        toolkit_slug: toolkit,
+        is_composio_managed: "true",
         limit: "50",
       });
       if (cursor) query.set("cursor", cursor);
@@ -297,17 +241,4 @@ class ComposioProvider implements ConnectorProvider {
     } while (cursor);
     return values;
   }
-}
-
-function matchesAuth(
-  candidate: { toolkit: string; auth: ConnectorAuth },
-  input: { toolkit: string; auth: ConnectorAuth },
-): boolean {
-  return (
-    candidate.toolkit === input.toolkit &&
-    candidate.auth.kind === input.auth.kind &&
-    (input.auth.kind !== "custom" ||
-      (candidate.auth.kind === "custom" &&
-        candidate.auth.scheme === input.auth.scheme))
-  );
 }
