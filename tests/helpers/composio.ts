@@ -9,7 +9,18 @@ const setupRequest = z.strictObject({
   callback_url: z.url(),
 });
 
+const execution = z.strictObject({
+  connected_account_id: z.string(),
+  user_id: z.string(),
+  version: z.literal("20261112_00"),
+  arguments: z.object({ mode: z.string().optional() }).loose(),
+});
+
 export class ComposioFixture {
+  executions: Array<{ action: string; account: string; arguments: unknown }> =
+    [];
+  onDispatch: (() => Promise<void>) | undefined;
+
   accounts = new Map<
     string,
     {
@@ -89,6 +100,78 @@ export class ComposioFixture {
         return;
       }
       respond(res, account);
+      return;
+    }
+    if (method === "GET" && url.pathname === "/api/v3.1/tools") {
+      const toolkit = url.searchParams.get("toolkit_slug");
+      assert.ok(toolkit);
+      const tool = {
+        toolkit: { slug: toolkit },
+        name: "Read account",
+        description: "Read account identity.",
+        version: "20261112_00",
+        input_parameters: { type: "object" },
+        output_parameters: { type: "object" },
+      };
+      respond(res, {
+        items: [
+          { ...tool, slug: `${toolkit.toUpperCase()}_READ_ACCOUNT` },
+          { ...tool, slug: `${toolkit.toUpperCase()}_GET_NAME` },
+          { ...tool, slug: "COMPOSIO_PROXY_EXECUTE" },
+          { ...tool, slug: `${toolkit.toUpperCase()}_CUSTOM_API_CALL` },
+          { ...tool, slug: "proxy" },
+          {
+            ...tool,
+            slug: `${toolkit.toUpperCase()}_OLD`,
+            is_deprecated: true,
+          },
+        ],
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      url.pathname.startsWith("/api/v3.1/tools/execute/")
+    ) {
+      const input = execution.parse(await readJson(request));
+      const account = this.accounts.get(input.connected_account_id);
+      assert.ok(account);
+      assert.equal(input.user_id, account.user_id);
+      const action = url.pathname.split("/").pop();
+      assert.ok(action);
+      assert.match(
+        action,
+        new RegExp(
+          `^${account.toolkit.slug.toUpperCase()}_(?:READ_ACCOUNT|GET_NAME)$`,
+        ),
+      );
+      this.executions.push({
+        action,
+        account: account.id,
+        arguments: input.arguments,
+      });
+      await this.onDispatch?.();
+      if (input.arguments.mode === "unknown") {
+        res.destroy();
+      } else if (input.arguments.mode === "rejected") {
+        respond(res, {
+          successful: false,
+          error: `fixture message with ${apiKey}`,
+        });
+      } else {
+        respond(res, {
+          successful: true,
+          data: {
+            account: account.id,
+            result:
+              input.arguments.mode === "reflect"
+                ? apiKey
+                : input.arguments.mode === "large"
+                  ? "x".repeat(12_000)
+                  : (input.arguments.echo ?? null),
+          },
+        });
+      }
       return;
     }
     throw new Error(`Unrecognized fixture route: ${method} ${url.pathname}`);

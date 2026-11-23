@@ -49,6 +49,22 @@ const credentialSchema = z.object({
 });
 type Credential = z.infer<typeof credentialSchema>;
 
+const receiptSchema = z.object({
+  requestId: z.uuid(),
+  requestHash: z.string(),
+  actionId: z.string(),
+  version: z.string(),
+  status: z.enum(["dispatching", "succeeded", "rejected", "outcome_unknown"]),
+  detail: z.string().nullable(),
+  result: z.string().nullable(),
+});
+export type Receipt = z.infer<typeof receiptSchema>;
+export type Completion = Pick<Receipt, "detail" | "result"> & {
+  status: Exclude<Receipt["status"], "dispatching">;
+};
+
+const receiptRetention = 7 * 86400_000;
+
 export class Store {
   readonly #db: DatabaseSync;
 
@@ -78,6 +94,15 @@ export class Store {
           kind TEXT CHECK(kind IN ('access', 'refresh')) NOT NULL,
           expires_at INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0
         ) STRICT;
+        CREATE TABLE IF NOT EXISTS receipts (
+          grant_id TEXT NOT NULL REFERENCES grants(id),
+          request_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+          action_id TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL,
+          expires_at INTEGER NOT NULL, detail TEXT, result TEXT,
+          PRIMARY KEY (grant_id, request_id)
+        ) STRICT;
+        UPDATE receipts SET status = 'outcome_unknown', detail = 'dispatch_interrupted'
+          WHERE status = 'dispatching';
         COMMIT;
       `);
     } catch (error) {
@@ -272,6 +297,64 @@ export class Store {
         "UPDATE grants SET revoked_at = ? WHERE id = ? AND client_id = ? AND revoked_at IS NULL",
       )
       .run(Date.now(), id, clientId);
+  }
+
+  receipt(grantId: string, requestId: string): Receipt | undefined {
+    const row = this.#db
+      .prepare(
+        `
+      SELECT request_id AS requestId, request_hash AS requestHash, action_id AS actionId,
+        version, status, detail, CASE WHEN expires_at > ? THEN result ELSE NULL END AS result
+      FROM receipts WHERE grant_id = ? AND request_id = ?`,
+      )
+      .get(Date.now(), grantId, requestId);
+    return row && receiptSchema.parse(row);
+  }
+
+  claimDispatch(
+    grantId: string,
+    receipt: Pick<
+      Receipt,
+      "requestId" | "requestHash" | "actionId" | "version"
+    >,
+  ) {
+    this.#db
+      .prepare(
+        `INSERT INTO receipts (grant_id, request_id, request_hash,
+      action_id, version, status, expires_at) VALUES (?, ?, ?, ?, ?, 'dispatching', ?)`,
+      )
+      .run(
+        grantId,
+        receipt.requestId,
+        receipt.requestHash,
+        receipt.actionId,
+        receipt.version,
+        Date.now() + receiptRetention,
+      );
+  }
+
+  finishDispatch(grantId: string, requestId: string, completion: Completion) {
+    const result = this.#db
+      .prepare(
+        `UPDATE receipts SET status = ?, detail = ?, result = ?
+      WHERE grant_id = ? AND request_id = ? AND status = 'dispatching'`,
+      )
+      .run(
+        completion.status,
+        completion.detail,
+        completion.result,
+        grantId,
+        requestId,
+      );
+    if (result.changes !== 1) throw new Error("Missing dispatch receipt.");
+  }
+
+  pruneResults() {
+    this.#db
+      .prepare(
+        "UPDATE receipts SET result = NULL WHERE result IS NOT NULL AND expires_at <= ?",
+      )
+      .run(Date.now());
   }
 
   private pruneOAuth() {

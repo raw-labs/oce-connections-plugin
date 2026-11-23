@@ -1,5 +1,6 @@
 import { createServer, type ServerOptions } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Actions } from "./actions.js";
 import { ComposioCatalog, packagedCatalog } from "./catalog.js";
 import { HttpError, send } from "./http.js";
 import { ConnectionsOAuth, type ClientRegistration } from "./oauth.js";
@@ -36,6 +37,7 @@ export function connectionsServer(options: {
     provider,
     options.authConfigIds,
   );
+  const actions = new Actions(oauth, store, queue, catalog, provider);
   const server = createServer(
     { ...options.tls, minVersion: "TLSv1.2" },
     (request, response) => {
@@ -67,8 +69,22 @@ export function connectionsServer(options: {
       )
         throw new HttpError(400, "invalid_request");
       const url = new URL(target, options.origin);
+      if (url.pathname !== target.split("?")[0])
+        throw new HttpError(400, "invalid_request");
       const method = request.method;
       if (method === "GET") {
+        if (url.pathname === "/v1/actions") {
+          await actions.search(request, response, url);
+          return;
+        }
+        if (url.pathname === "/v1/action") {
+          await actions.describe(request, response, url);
+          return;
+        }
+        if (url.pathname === "/v1/calls") {
+          await actions.receipt(request, response, url);
+          return;
+        }
         if (url.pathname === "/healthz" && !url.search) {
           send(response, 200, { status: "ok" });
           return;
@@ -89,6 +105,10 @@ export function connectionsServer(options: {
         }
       }
       if (method === "POST" && !url.search) {
+        if (url.pathname === "/v1/calls") {
+          await actions.call(request, response);
+          return;
+        }
         if (url.pathname === "/oauth/token") {
           await oauth.exchange(request, response);
           return;
@@ -107,6 +127,11 @@ export function connectionsServer(options: {
           request.headers.authorization
         )
           response.setHeader("www-authenticate", 'Basic realm="Connections"');
+        if (error.code === "invalid_token")
+          response.setHeader(
+            "www-authenticate",
+            'Bearer realm="Connections", error="invalid_token"',
+          );
         send(response, error.status, { error: error.code });
       } else if (error instanceof ConnectorProviderError) {
         send(response, 502, { error: "provider_unavailable" });

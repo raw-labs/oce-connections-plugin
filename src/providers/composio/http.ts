@@ -126,6 +126,12 @@ export class ComposioHttp {
     return { missing: false, data };
   }
 
+  containsProjectKey(value: unknown): boolean {
+    return (JSON.stringify(value) ?? "").includes(
+      JSON.stringify(this.#key).slice(1, -1),
+    );
+  }
+
   diagnostic(value: unknown): string | null {
     return providerDiagnostic(value, [this.#key]);
   }

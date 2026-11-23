@@ -128,6 +128,8 @@ export class ConnectionsOAuth {
           return false;
         return { ...token, accessToken: token.accessToken, client, user };
       },
+      verifyScope: async (token, requested) =>
+        requested.every((item) => token.scope?.includes(item)),
       getAccessToken: async (value) => {
         const token = store.credential("access", value);
         const client = token && this.client(token.clientId);
@@ -389,12 +391,26 @@ export class ConnectionsOAuth {
     send(response, 200);
   }
 
-  access(header: string | undefined) {
-    const value = /^Bearer ([A-Za-z0-9_-]{1,256})$/i.exec(header ?? "")?.[1];
-    const token = value && this.store.credential("access", value);
-    if (!token || !this.#clients.has(token.clientId))
+  async access(header: string | undefined) {
+    if (!/^Bearer [A-Za-z0-9_-]{1,256}$/i.test(header ?? ""))
       throw new HttpError(401, "invalid_token");
-    return token;
+    try {
+      const token = await this.#server.authenticate(
+        new OAuth2Server.Request({
+          method: "GET",
+          headers: { authorization: header },
+          query: {},
+        }),
+        new OAuth2Server.Response(),
+        { scope: [scope] },
+      );
+      const { grantId } = userSchema.parse(token.user);
+      const grant = this.store.grant(grantId, token.client.id);
+      if (grant) return grant;
+    } catch (error) {
+      if (!(error instanceof OAuth2Server.InvalidTokenError)) throw error;
+    }
+    throw new HttpError(401, "invalid_token");
   }
 }
 

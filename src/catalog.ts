@@ -68,10 +68,19 @@ export class ComposioCatalog {
       const page = record(response.data, "not_started");
       for (const raw of array(page.items, "not_started")) {
         const tool = record(raw, "not_started");
-        if (tool.is_deprecated === true) continue;
+        if (tool.is_deprecated === true || tool.is_custom === true) continue;
         const toolkit = record(tool.toolkit, "not_started");
         if (text(toolkit.slug, "not_started") !== connector.toolkitSlug)
           throw invalidResponse("not_started");
+        const slug = text(tool.slug, "not_started", 256);
+        if (
+          !/^[A-Z][A-Z0-9_]{1,255}$/.test(slug) ||
+          slug.startsWith("COMPOSIO_") ||
+          /(?:^|_)(?:PROXY_EXECUTE|CUSTOM_API_CALL|RAW_API_REQUEST|RAW_HTTP_REQUEST)(?:_|$)/.test(
+            slug,
+          )
+        )
+          continue;
         const inputSchema = jsonValue(
           tool.input_parameters ?? null,
           "not_started",
@@ -81,7 +90,7 @@ export class ComposioCatalog {
           "not_started",
         );
         const action = actionSchema.parse({
-          id: text(tool.slug, "not_started", 256),
+          id: slug,
           connectorId: id,
           name:
             optionalText(tool.name, "not_started") ??
@@ -99,6 +108,8 @@ export class ComposioCatalog {
           inputSchema,
           outputSchema,
         });
+        if (this.http.containsProjectKey(action))
+          throw invalidResponse("not_started");
         actions.push(action);
       }
       cursor = optionalText(page.next_cursor, "not_started");

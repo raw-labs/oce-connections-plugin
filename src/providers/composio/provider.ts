@@ -122,12 +122,15 @@ class ComposioProvider implements ConnectorProvider {
     const expiresAt = text(body.expires_at, "outcome_unknown");
     if (!Number.isFinite(Date.parse(expiresAt)))
       throw invalidResponse("outcome_unknown");
+    const connectUrl = requireHttps(
+      text(body.redirect_url, "outcome_unknown", 16_384),
+      "outcome_unknown",
+    );
+    if (this.http.containsProjectKey(connectUrl))
+      throw invalidResponse("outcome_unknown");
     return {
       accountId: text(body.connected_account_id, "outcome_unknown"),
-      connectUrl: requireHttps(
-        text(body.redirect_url, "outcome_unknown", 16_384),
-        "outcome_unknown",
-      ),
+      connectUrl,
       expiresAt,
     };
   }
@@ -235,13 +238,10 @@ class ComposioProvider implements ConnectorProvider {
         );
       }
       try {
-        return {
-          status: "succeeded",
-          result: {
-            kind: "inline",
-            data: jsonValue(body.data, "outcome_unknown"),
-          },
-        };
+        const data = jsonValue(body.data, "outcome_unknown");
+        if (this.http.containsProjectKey(data))
+          throw invalidResponse("outcome_unknown");
+        return { status: "succeeded", result: { kind: "inline", data } };
       } catch (error) {
         if (!(error instanceof ConnectorProviderError)) throw error;
         return {

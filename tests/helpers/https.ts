@@ -255,3 +255,20 @@ export function respond(res: ServerResponse, payload: unknown) {
     .writeHead(200, { "content-type": "application/json" })
     .end(JSON.stringify(payload));
 }
+
+export async function enroll(origin: string, connector: string) {
+  const { code, verifier } = await authorizeCode(origin, connector);
+  return readTokens(await tokenRequest(origin, codeFields(code, verifier)));
+}
+
+export function revoke(
+  origin: string,
+  token: string,
+  authorization = clientAuth,
+) {
+  return fetch(`${origin}/oauth/revoke`, {
+    method: "POST",
+    headers: { ...formHeaders, authorization },
+    body: new URLSearchParams({ token }),
+  });
+}
