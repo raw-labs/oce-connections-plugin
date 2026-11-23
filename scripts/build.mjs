@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
 import { readdir, rm } from "node:fs/promises";
 
@@ -13,3 +14,19 @@ await build({
   target: "node24",
   format: "esm",
 });
+
+execFileSync(
+  "go",
+  [
+    "build",
+    "-trimpath",
+    "-buildvcs=false",
+    "-o",
+    ".local/oce-connections",
+    "./cli",
+  ],
+  {
+    env: { ...process.env, CGO_ENABLED: "0" },
+    stdio: "inherit",
+  },
+);

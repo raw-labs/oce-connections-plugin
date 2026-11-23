@@ -14,6 +14,8 @@ assert.equal(packed.version, manifest.version);
 const paths = new Set(packed.files.map(({ path }) => path));
 for (const path of [
   "dist/main.js",
+  "cli/main.go",
+  "go.mod",
   "dist/catalog.js",
   "assets/catalog.json",
   "skills/connections/SKILL.md",

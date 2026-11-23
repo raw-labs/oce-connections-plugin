@@ -18,3 +18,6 @@ The predecessor qualified OpenClaw `2026.9.8` at
 See the predecessor's [host pin and archive checksum](https://github.com/raw-labs/openclaw-connections/blob/df4f430fdad5a78515d3272e766ea0e2e9e97875/openclaw-host.json).
 The successor uses [Zod](https://github.com/colinhacks/zod) (MIT) and
 [Node OAuth2 Server](https://github.com/node-oauth/node-oauth2-server) (MIT).
+
+The native CLI links the [Go standard library](https://go.dev/LICENSE) under
+the BSD 3-Clause license. The Go patch version is pinned in `go.mod`.
