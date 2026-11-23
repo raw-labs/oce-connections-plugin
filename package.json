@@ -38,11 +38,12 @@
   },
   "scripts": {
     "check": "prettier --check . && tsc --noEmit && pnpm test",
-    "test": "pnpm build && node --import tsx --test tests/*.test.ts",
+    "test": "pnpm build && node --import tsx --test tests/*.test.*",
     "build": "node scripts/build.mjs",
     "format": "prettier --write .",
     "artifact": "pnpm build && mkdir -p .local && npm pack --pack-destination .local",
-    "inspect:package": "node scripts/inspect-package.mjs"
+    "inspect:package": "node scripts/inspect-package.mjs",
+    "build:oce": "node dev/oce/stage.mjs"
   },
   "repository": {
     "type": "git",

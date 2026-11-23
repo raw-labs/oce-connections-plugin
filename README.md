@@ -1,6 +1,21 @@
 # OCE Connections
 
-This repository is the successor to [OpenClaw Connections](https://github.com/raw-labs/openclaw-connections). It retains the Composio adapter and connector catalog. OCE owns saved connections and agent grants. The service runs HTTPS and registers OCE as a confidential OAuth client with exact redirect URIs. It exchanges S256-protected codes for five-minute access tokens and rotating refresh tokens.
+OCE Connections is the OCE-native successor to [OpenClaw Connections](https://github.com/raw-labs/openclaw-connections).
+It provides a standalone HTTPS service, the `oce-connections` CLI, and an
+OpenClaw skill. OCE owns the saved connections and Agent grants. This service
+owns the binding to the exact Composio account. Composio holds the downstream
+credential and runs the actions.
+
+An OCE user chooses a connection template, completes Composio-hosted consent
+in the same browser, and grants the saved connection to an Agent in OCE. Each
+enrollment has its own Composio subject and account. To give one Agent access to
+two accounts on the same provider, assign each account to its own configured
+plugin slot. Both slots use the same CLI and skill.
+
+## Build and test
+
+Use Node.js 24.16 or later, pnpm 10.33.0, the Go patch pinned in
+[`go.mod`](go.mod), and OpenSSL for the test certificate.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -9,4 +24,109 @@ pnpm build
 pnpm inspect:package
 ```
 
-See [RELEASING.md](RELEASING.md) for distribution and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance.
+`pnpm test` starts the built HTTPS service in child processes, drives its real
+OAuth endpoints with a test client, and runs the native CLI. The controlled
+Composio backend provides two GitHub accounts and a Slack account. The suite
+checks exact account binding, unauthorized actions and overrides, refresh and
+revocation, credential handling, and restart and interrupted-dispatch recovery.
+It also builds Linux ARM64 and AMD64 dev overlays and tests the registered
+request policies. The tests need permission to listen on loopback. They use
+temporary databases and a test CA, with ordinary HTTPS verification enabled.
+
+## Run the HTTPS service
+
+From the checkout, after building:
+
+```sh
+mkdir -p .local/tls
+cp dev/service.example.json .local/service.json
+# Set the HTTPS origin, certificate paths and exact OCE callback URIs.
+# Supply COMPOSIO_API_KEY and the registered client secrets from your secret store.
+node dist/main.js .local/service.json
+```
+
+- The service binds to the configured host and port and serves TLS itself.
+  The public `origin` is the canonical OAuth issuer and Composio callback
+  origin. If using the sample OCE slot aliases, route each HTTPS origin to the
+  service and cover the issuer and each alias with valid TLS certificates.
+- Set `COMPOSIO_API_KEY` only in the service environment. For each confidential
+  OAuth client, list its permitted `connectorIds`, full redirect URIs and the
+  environment variable that supplies its distinct secret. Use a random secret
+  of at least 32 printable characters. Register the redirect URI shown by OCE,
+  including any path or query. The service supports `client_secret_basic` and
+  `client_secret_post`.
+- The service uses the [fork's catalog](assets/catalog.json). Composio-managed
+  connectors reuse a matching enabled auth configuration or create one through
+  Composio. Set `authConfigIds` for connectors that require an existing Composio
+  auth configuration, including PostHog and Bing Webmaster Tools. Their
+  downstream credential is supplied through Composio's hosted flow.
+- Store the database on a private, persistent local volume. Run one service
+  process per database. Stop it before copying the file for backup. Treat the
+  database as sensitive because it holds account references and action results.
+
+OCE starts enrollment at `GET /oauth/authorize/<connector>` with state and
+S256 PKCE. The service sets a browser ticket and starts Composio consent. On
+callback, it checks the browser ticket and reads the enrolled Composio account
+server-side. Only an active account matching the account ID, subject, toolkit
+and auth configuration can produce a code. The browser can retry the callback
+while consent is pending. An enrollment expires after ten minutes or sooner
+if Composio's setup expires.
+
+`POST /oauth/token` exchanges a two-minute, single-use code for a five-minute
+access token and a 30-day rotating refresh token. Code and token values are
+stored as hashes. Losing a refresh exchange after consumption can require
+reconnecting. `POST /oauth/revoke` revokes the selected saved connection's
+token family without affecting another enrollment. OCE owns detaching an
+Agent from a saved connection. OAuth revocation retires the service grant.
+Composio project administration handles deletion of the underlying connected
+account, including orphaned or abandoned enrollments.
+
+## Use the CLI
+
+The [Connections skill](skills/connections/SKILL.md) describes the workflow.
+In OCE, use `--slot NAME` for the assigned account and let OpenShell resolve
+the corresponding environment placeholder on the permitted HTTPS request.
+
+```sh
+oce-connections --slot github-work actions --query 'list repositories'
+oce-connections --slot github-work describe ACTION
+oce-connections --slot github-work run ACTION --version VERSION --request-id UUID < arguments.json
+oce-connections --slot github-work receipt UUID
+```
+
+For direct development, the built binary is `.local/oce-connections`.
+It reads `OCE_CONNECTIONS_URL` and `OCE_CONNECTIONS_TOKEN` by default. For
+`--slot github-work`, the variables are `OCE_CONNECTIONS_GITHUB_WORK_URL`
+and `OCE_CONNECTIONS_GITHUB_WORK_TOKEN`. Use access tokens from a test OAuth
+client. The test suite is a repeatable example of that flow. For a private
+test CA, set `OCE_CONNECTIONS_CA_FILE` to its PEM certificate.
+
+The Bearer grant selects the account for search, description, execution and
+receipt lookup. Discovery uses the active account's toolkit and excludes
+deprecated actions, custom actions and known raw proxy actions. The service
+caches the toolkit catalog for five minutes. Downstream
+provider scopes and resource permissions are enforced when Composio executes
+the action. The service checks the current account binding and exact action
+version before constructing the upstream request. It accepts bounded JSON
+arguments and treats provider schemas as advisory.
+
+A request UUID is scoped to one grant. Reusing it with the same action,
+version and arguments retrieves the prior outcome. Different arguments with
+the same UUID are rejected. A receipt is committed before dispatch. If the
+service loses a response or is interrupted during dispatch, the outcome
+remains `outcome_unknown` and the request is never automatically replayed.
+Use `receipt` and reconcile the provider-side outcome before another
+mutation. Result data is available for seven days. Large results are paged.
+Request IDs and outcomes remain so the service can refuse replays.
+
+## OCE development integration
+
+See the [dev image and registration guide](dev/oce/README.md). The bundle
+includes the native Linux CLI, skill, manual OAuth templates, single-slot
+plugin registrations, and release-bound request policies. It targets a
+dedicated OpenClaw Harness on Kubernetes with OpenShell Bearer delivery.
+
+The service starts with a fresh SQLite database. Existing Gateway plugin
+state stays in the predecessor and accounts are enrolled again through OCE.
+See [packaging and release details](RELEASING.md) and
+[third-party notices](THIRD_PARTY_NOTICES.md).

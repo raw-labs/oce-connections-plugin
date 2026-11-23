@@ -1,0 +1,23 @@
+{
+  "issuer": "https://connections.dev.example.test",
+  "slots": [
+    {
+      "name": "github-work",
+      "label": "Connections · GitHub work",
+      "connector": "github",
+      "origin": "https://connections-work.dev.example.test"
+    },
+    {
+      "name": "github-personal",
+      "label": "Connections · GitHub personal",
+      "connector": "github",
+      "origin": "https://connections-personal.dev.example.test"
+    },
+    {
+      "name": "slack",
+      "label": "Connections · Slack",
+      "connector": "slack",
+      "origin": "https://connections-slack.dev.example.test"
+    }
+  ]
+}

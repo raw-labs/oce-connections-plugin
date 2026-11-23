@@ -27,6 +27,7 @@ const usage = `Usage:
 
 const maxRequest = 128 * 1024
 const maxResponse = 9 * 1024 * 1024
+const slotsFile = "/etc/oce-connections/slots.json"
 
 var (
 	slotName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
@@ -183,7 +184,7 @@ func send(slot string, command command) ([]byte, error) {
 	if slot != "" {
 		prefix += strings.ToUpper(strings.ReplaceAll(slot, "-", "_")) + "_"
 	}
-	origin, err := url.Parse(os.Getenv(prefix + "URL"))
+	origin, err := url.Parse(serviceOrigin(slot, prefix+"URL"))
 	if err != nil || origin.Scheme != "https" || origin.Hostname() == "" || origin.User != nil ||
 		(origin.Path != "" && origin.Path != "/") || origin.RawPath != "" || origin.RawQuery != "" ||
 		origin.ForceQuery || origin.Fragment != "" || origin.Opaque != "" {
@@ -266,4 +267,18 @@ func knownError(code string) bool {
 	default:
 		return false
 	}
+}
+
+// The harness image supplies read-only public destinations. Direct development
+// can set a URL in the environment when the image configuration is absent.
+func serviceOrigin(slot, variable string) string {
+	data, err := os.ReadFile(slotsFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.Getenv(variable)
+	}
+	var urls map[string]string
+	if err != nil || json.Unmarshal(data, &urls) != nil {
+		return ""
+	}
+	return urls[slot]
 }

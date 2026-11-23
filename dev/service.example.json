@@ -1,0 +1,30 @@
+{
+  "origin": "https://connections.dev.example.test",
+  "listenHost": "0.0.0.0",
+  "listenPort": 8443,
+  "database": ".local/connections.sqlite",
+  "tls": {
+    "cert": ".local/tls/fullchain.pem",
+    "key": ".local/tls/privkey.pem"
+  },
+  "oauthClients": [
+    {
+      "id": "oce-connections-github-work",
+      "secretEnv": "OCE_GITHUB_WORK_CLIENT_SECRET",
+      "redirectUris": ["https://oce.dev.example.test/oauth/callback"],
+      "connectorIds": ["github"]
+    },
+    {
+      "id": "oce-connections-github-personal",
+      "secretEnv": "OCE_GITHUB_PERSONAL_CLIENT_SECRET",
+      "redirectUris": ["https://oce.dev.example.test/oauth/callback"],
+      "connectorIds": ["github"]
+    },
+    {
+      "id": "oce-connections-slack",
+      "secretEnv": "OCE_SLACK_CLIENT_SECRET",
+      "redirectUris": ["https://oce.dev.example.test/oauth/callback"],
+      "connectorIds": ["slack"]
+    }
+  ]
+}
