@@ -101,6 +101,8 @@ export class Store {
           expires_at INTEGER NOT NULL, detail TEXT, result TEXT,
           PRIMARY KEY (grant_id, request_id)
         ) STRICT;
+        CREATE INDEX IF NOT EXISTS receipt_results_expiry ON receipts (expires_at)
+          WHERE result IS NOT NULL;
         UPDATE receipts SET status = 'outcome_unknown', detail = 'dispatch_interrupted'
           WHERE status = 'dispatching';
         COMMIT;

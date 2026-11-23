@@ -135,8 +135,8 @@ export class Actions {
       await this.requireActive(grant, signal);
 
       // Authority is checked again after provider I/O and before the durable claim.
-      await this.oauth.access(header);
       this.store.pruneResults();
+      await this.oauth.access(header);
       const dispatch = { actionId, requestId, version, requestHash };
       this.store.claimDispatch(grant.id, dispatch);
       let completion: Completion;
