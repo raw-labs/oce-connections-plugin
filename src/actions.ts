@@ -30,7 +30,8 @@ const searchQuery = z.strictObject({
     .optional(),
 });
 const describeQuery = z.strictObject({ id: slug });
-const receiptQuery = z.strictObject({ requestId: z.uuid(), cursor });
+const requestId = z.uuid().transform((value) => value.toLowerCase());
+const receiptQuery = z.strictObject({ requestId, cursor });
 const callSchema = z.strictObject({
   actionId: slug,
   version: z
@@ -38,7 +39,7 @@ const callSchema = z.strictObject({
     .min(1)
     .max(200)
     .refine((value) => value !== "latest"),
-  requestId: z.uuid(),
+  requestId,
   arguments: z.unknown(),
 });
 const maximumBody = 128 * 1024;
@@ -202,10 +203,15 @@ function presentReceipt(receipt: Receipt, cursor?: number) {
   const { requestId, actionId, version, status, detail, result } = receipt;
   const metadata = { requestId, actionId, version, status, detail };
   if (cursor !== undefined) {
-    if (result === null || cursor >= result.length)
+    if (
+      result === null ||
+      cursor >= result.length ||
+      isLowSurrogate(result.charCodeAt(cursor))
+    )
       throw new HttpError(400, "invalid_result_cursor");
-    const text = result.slice(cursor, cursor + pageSize);
-    const next = cursor + text.length;
+    const end = Math.min(cursor + pageSize, result.length);
+    const next = isLowSurrogate(result.charCodeAt(end)) ? end - 1 : end;
+    const text = result.slice(cursor, next);
     return {
       ...metadata,
       result: {
@@ -220,4 +226,8 @@ function presentReceipt(receipt: Receipt, cursor?: number) {
     return { ...metadata, result: { kind: "paged", nextCursor: "0" } };
   const data: unknown = JSON.parse(result);
   return { ...metadata, result: { kind: "inline", data } };
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { z } from "zod";
 import { ComposioFixture } from "./helpers/composio.js";
 import { apiKey, enroll, fixture, revoke } from "./helpers/https.js";
 
@@ -14,7 +16,7 @@ await test(
     const slack = await enroll(service.origin, "slack");
     const version = "20261112_00";
     const actionId = "GITHUB_READ_ACCOUNT";
-    const requestId = randomUUID();
+    const requestId = "a6ec6a48-e6b2-4099-a61a-8744a24d20d2";
     const proposed = {
       actionId,
       version,
@@ -70,7 +72,7 @@ await test(
 
     const [first, duplicate] = await Promise.all([
       run(proposed),
-      run(proposed),
+      run({ ...proposed, requestId: requestId.toUpperCase() }),
     ]);
     const outcome: unknown = await first.json();
     assert.deepEqual(outcome, {
@@ -86,6 +88,12 @@ await test(
     });
     assert.deepEqual(await duplicate.json(), outcome);
     assert.equal(provider.executions.length, 1);
+    assert.deepEqual(
+      await (
+        await get(`/v1/calls?requestId=${requestId.toUpperCase()}`)
+      ).json(),
+      outcome,
+    );
     assert.equal((await run({ ...proposed, arguments: {} })).status, 409);
     assert.equal(
       (await get(`/v1/calls?requestId=${requestId}`, slack.access_token))
@@ -104,15 +112,39 @@ await test(
     assert.match(reflected, /result_unavailable/);
 
     const largeId = randomUUID();
+    const prefix = '{"account":"account-1","result":"';
+    const echo = "x".repeat(8191 - prefix.length) + "🦉tail";
     const large = await run({
       ...proposed,
       requestId: largeId,
-      arguments: { mode: "large" },
+      arguments: { echo },
     });
     assert.match(await large.text(), /"kind":"paged"/);
+    const pageSchema = z.object({
+      result: z.object({
+        kind: z.literal("page"),
+        text: z.string(),
+        nextCursor: z.string().nullable(),
+      }),
+    });
     const page = await get(`/v1/calls?requestId=${largeId}&cursor=0`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /"nextCursor":"8192"/);
+    const firstPage = pageSchema.parse(await page.json()).result;
+    assert.equal(firstPage.nextCursor, "8191");
+    const secondPage = pageSchema.parse(
+      await (
+        await get(
+          `/v1/calls?requestId=${largeId}&cursor=${firstPage.nextCursor}`,
+        )
+      ).json(),
+    ).result;
+    assert.equal(firstPage.text.isWellFormed(), true);
+    assert.equal(secondPage.text.isWellFormed(), true);
+    assert.equal(secondPage.nextCursor, null);
+    assert.deepEqual(JSON.parse(firstPage.text + secondPage.text), {
+      account: "account-1",
+      result: echo,
+    });
 
     const unknown = await run({
       ...proposed,
@@ -143,7 +175,19 @@ await test(
       release();
       provider.onDispatch = undefined;
     }
+    // Existing databases can contain an uppercase UUID stored before normalization.
+    const prior = new DatabaseSync(service.database);
+    try {
+      prior
+        .prepare(
+          "UPDATE receipts SET request_id = upper(request_id) WHERE request_id = ?",
+        )
+        .run(requestId);
+    } finally {
+      prior.close();
+    }
     await service.start();
+    assert.deepEqual(await (await run(proposed)).json(), outcome);
     const recovered = await run(interrupted);
     assert.match(await recovered.text(), /dispatch_interrupted/);
     assert.equal(provider.executions.length, 5);

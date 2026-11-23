@@ -153,11 +153,6 @@ export class ComposioFixture {
       await this.onDispatch?.();
       if (input.arguments.mode === "unknown") {
         res.destroy();
-      } else if (input.arguments.mode === "rejected") {
-        respond(res, {
-          successful: false,
-          error: `fixture message with ${apiKey}`,
-        });
       } else {
         respond(res, {
           successful: true,
@@ -166,9 +161,7 @@ export class ComposioFixture {
             result:
               input.arguments.mode === "reflect"
                 ? apiKey
-                : input.arguments.mode === "large"
-                  ? "x".repeat(12_000)
-                  : (input.arguments.echo ?? null),
+                : (input.arguments.echo ?? null),
           },
         });
       }

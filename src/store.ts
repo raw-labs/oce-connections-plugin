@@ -101,6 +101,7 @@ export class Store {
           expires_at INTEGER NOT NULL, detail TEXT, result TEXT,
           PRIMARY KEY (grant_id, request_id)
         ) STRICT;
+        CREATE INDEX IF NOT EXISTS receipts_by_request ON receipts (grant_id, request_id COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS receipt_results_expiry ON receipts (expires_at)
           WHERE result IS NOT NULL;
         UPDATE receipts SET status = 'outcome_unknown', detail = 'dispatch_interrupted'
@@ -305,11 +306,12 @@ export class Store {
     const row = this.#db
       .prepare(
         `
-      SELECT request_id AS requestId, request_hash AS requestHash, action_id AS actionId,
+      SELECT lower(request_id) AS requestId, request_hash AS requestHash, action_id AS actionId,
         version, status, detail, CASE WHEN expires_at > ? THEN result ELSE NULL END AS result
-      FROM receipts WHERE grant_id = ? AND request_id = ?`,
+      FROM receipts WHERE grant_id = ? AND request_id = ? COLLATE NOCASE
+      ORDER BY request_id = ? DESC LIMIT 1`,
       )
-      .get(Date.now(), grantId, requestId);
+      .get(Date.now(), grantId, requestId, requestId);
     return row && receiptSchema.parse(row);
   }
 
