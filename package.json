@@ -36,7 +36,7 @@
   },
   "scripts": {
     "check": "prettier --check . && tsc --noEmit && pnpm test",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "pnpm build && node --import tsx --test tests/*.test.ts",
     "build": "node scripts/build.mjs",
     "format": "prettier --write .",
     "artifact": "pnpm build && mkdir -p .local && npm pack --pack-destination .local",

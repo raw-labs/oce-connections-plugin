@@ -1,0 +1,425 @@
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import OAuth2Server from "@node-oauth/oauth2-server";
+import { z } from "zod";
+import type { ComposioCatalog } from "./catalog.js";
+import { body, HttpError, parameters, redirect, send } from "./http.js";
+import type { Queue } from "./queue.js";
+import {
+  authorizationSchema,
+  digest,
+  grantSchema,
+  type Store,
+} from "./store.js";
+import type { ConnectorProvider } from "./types/provider.js";
+
+export interface ClientRegistration {
+  id: string;
+  secret: string;
+  redirectUris: string[];
+}
+const scope = "connections";
+const lifetime = 10 * 60;
+const oauthCredential = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
+const clientFields = {
+  client_id: z.string().max(256).optional(),
+  client_secret: z.string().max(2048).optional(),
+};
+const tokenRequest = z.discriminatedUnion("grant_type", [
+  z.strictObject({
+    ...clientFields,
+    grant_type: z.literal("authorization_code"),
+    code: oauthCredential,
+    code_verifier: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/),
+    redirect_uri: z.string().max(2048),
+  }),
+  z.strictObject({
+    ...clientFields,
+    grant_type: z.literal("refresh_token"),
+    refresh_token: oauthCredential,
+    scope: z.literal(scope).optional(),
+  }),
+]);
+const revokeRequest = z.strictObject({
+  ...clientFields,
+  token: z.string().min(1).max(2048),
+  token_type_hint: z.string().max(80).optional(),
+});
+const userSchema = z.object({ grantId: z.uuid() });
+const enrollmentUserSchema = userSchema.extend({
+  ticketHash: z.string(),
+  grant: grantSchema,
+});
+
+export class ConnectionsOAuth {
+  readonly #clients = new Map<string, ClientRegistration>();
+  readonly #server: OAuth2Server;
+
+  constructor(
+    clients: ClientRegistration[],
+    private readonly origin: string,
+    private readonly store: Store,
+    private readonly queue: Queue,
+    private readonly catalog: ComposioCatalog,
+    private readonly provider: ConnectorProvider,
+    private readonly authConfigIds: Record<string, string>,
+  ) {
+    for (const client of clients) this.#clients.set(client.id, client);
+    const model: OAuth2Server.AuthorizationCodeModel &
+      OAuth2Server.RefreshTokenModel = {
+      getClient: async (id, secret) => {
+        // The library passes null only for the browser authorize handler.
+        // Token and revocation requests authenticate before calling the library.
+        return secret === null || (secret && this.authenticated(id, secret))
+          ? this.client(id)
+          : false;
+      },
+      validateScope: async () => [scope],
+      validateRedirectUri: async (uri, client) =>
+        this.#clients.get(client.id)?.redirectUris.includes(uri) === true,
+      saveAuthorizationCode: async (code, client, user) => {
+        const { grant, ticketHash } = enrollmentUserSchema.parse(user);
+        if (
+          code.codeChallengeMethod !== "S256" ||
+          !code.codeChallenge ||
+          !store.saveCode(grant, ticketHash, code.authorizationCode, {
+            expiresAt: code.expiresAt.getTime(),
+            redirectUri: code.redirectUri,
+            challenge: code.codeChallenge,
+          })
+        )
+          return false;
+        return { ...code, client, user };
+      },
+      getAuthorizationCode: async (value) => {
+        const code = store.code(value);
+        const client = code && this.client(code.clientId);
+        return code && client
+          ? {
+              authorizationCode: value,
+              expiresAt: new Date(code.expiresAt),
+              redirectUri: code.redirectUri,
+              codeChallenge: code.challenge,
+              codeChallengeMethod: "S256",
+              scope: [scope],
+              client,
+              user: { grantId: code.grantId },
+            }
+          : false;
+      },
+      revokeAuthorizationCode: async (code) =>
+        store.consumeCode(code.authorizationCode),
+      saveToken: async (token, client, user) => {
+        const { grantId } = userSchema.parse(user);
+        if (
+          typeof token.accessToken !== "string" ||
+          !(token.accessTokenExpiresAt instanceof Date) ||
+          typeof token.refreshToken !== "string" ||
+          !(token.refreshTokenExpiresAt instanceof Date) ||
+          !store.saveTokens(
+            grantId,
+            client.id,
+            token.accessToken,
+            token.accessTokenExpiresAt.getTime(),
+            token.refreshToken,
+            token.refreshTokenExpiresAt.getTime(),
+          )
+        )
+          return false;
+        return { ...token, accessToken: token.accessToken, client, user };
+      },
+      getAccessToken: async (value) => {
+        const token = store.credential("access", value);
+        const client = token && this.client(token.clientId);
+        return token && client
+          ? {
+              accessToken: value,
+              accessTokenExpiresAt: new Date(token.expiresAt),
+              scope: [scope],
+              client,
+              user: { grantId: token.grantId },
+            }
+          : false;
+      },
+      getRefreshToken: async (value) => {
+        const token = store.credential("refresh", value);
+        const client = token && this.client(token.clientId);
+        return token && client
+          ? {
+              refreshToken: value,
+              refreshTokenExpiresAt: new Date(token.expiresAt),
+              scope: [scope],
+              client,
+              user: { grantId: token.grantId },
+            }
+          : false;
+      },
+      revokeToken: async (token) => store.consumeRefresh(token.refreshToken),
+    };
+    this.#server = new OAuth2Server({
+      model,
+      accessTokenLifetime: 300,
+      refreshTokenLifetime: 30 * 86400,
+      alwaysIssueNewRefreshToken: true,
+    });
+  }
+
+  private client(id: string): OAuth2Server.Client | undefined {
+    const registration = this.#clients.get(id);
+    if (registration)
+      return {
+        id,
+        redirectUris: registration.redirectUris,
+        grants: ["authorization_code", "refresh_token"],
+      };
+  }
+
+  private authenticated(id: string, secret: string): boolean {
+    const registration = this.#clients.get(id);
+    return (
+      registration !== undefined &&
+      timingSafeEqual(
+        Buffer.from(digest(secret), "hex"),
+        Buffer.from(digest(registration.secret), "hex"),
+      )
+    );
+  }
+
+  private authenticateClient(
+    request: IncomingMessage,
+    values: {
+      client_id?: string | undefined;
+      client_secret?: string | undefined;
+    },
+  ) {
+    let id = values.client_id;
+    let secret = values.client_secret;
+    const basic = request.headers.authorization;
+    if (basic !== undefined) {
+      if (id !== undefined || secret !== undefined)
+        throw new HttpError(400, "invalid_request");
+      const match = /^Basic ([A-Za-z0-9+/]+={0,2})$/i.exec(basic)?.[1];
+      if (match) {
+        const decoded = Buffer.from(match, "base64").toString("utf8");
+        const separator = decoded.indexOf(":");
+        if (separator > 0) {
+          try {
+            id = decodeFormComponent(decoded.slice(0, separator));
+            secret = decodeFormComponent(decoded.slice(separator + 1));
+          } catch {
+            throw new HttpError(401, "invalid_client");
+          }
+        }
+      }
+    }
+    if (!id || !secret || !this.authenticated(id, secret))
+      throw new HttpError(401, "invalid_client");
+    return { client_id: id, client_secret: secret };
+  }
+
+  async authorize(connectorId: string, url: URL, response: ServerResponse) {
+    const input = authorizationSchema.safeParse(parameters(url.searchParams));
+    if (!input.success) throw new HttpError(400, "invalid_request");
+    const request = input.data;
+    if (
+      !this.#clients
+        .get(request.client_id)
+        ?.redirectUris.includes(request.redirect_uri)
+    )
+      throw new HttpError(400, "invalid_client");
+    const connector = this.catalog.connectors.find(
+      ({ id }) => id === connectorId,
+    );
+    if (!connector) throw new HttpError(404, "unknown_connector");
+
+    const id = randomUUID();
+    const subjectId = `oce_connections_${id}`;
+    const ticket = randomBytes(32).toString("base64url");
+    const callback = new URL(`/oauth/complete/${id}`, this.origin);
+    const expiresAt = Date.now() + lifetime * 1000;
+    this.store.startEnrollment(id, {
+      request,
+      connectorId,
+      expiresAt,
+      ticketHash: digest(ticket),
+    });
+    const signal = AbortSignal.timeout(45_000);
+    const configuredId = Object.hasOwn(this.authConfigIds, connectorId)
+      ? this.authConfigIds[connectorId]
+      : undefined;
+    try {
+      if (!configuredId && connector.auth.kind === "custom")
+        throw new HttpError(503, "connector_unconfigured");
+      const authConfigurationId =
+        configuredId ??
+        (await this.queue.run(
+          `toolkit:${connector.toolkitSlug}`,
+          async () =>
+            (
+              await this.provider.resolveAuthConfiguration(
+                { toolkit: connector.toolkitSlug, auth: connector.auth },
+                signal,
+              )
+            ).id,
+        ));
+      const setup = await this.provider.createSetup(
+        { authConfigurationId, subjectId, callbackUrl: callback.href },
+        signal,
+      );
+      this.store.setEnrollmentBinding(
+        id,
+        {
+          accountId: setup.accountId,
+          subjectId,
+          toolkit: connector.toolkitSlug,
+          authConfigurationId,
+        },
+        Date.parse(setup.expiresAt),
+      );
+      response.setHeader("set-cookie", enrollmentCookie(id, ticket, lifetime));
+      redirect(response, setup.connectUrl);
+    } catch {
+      redirect(response, oauthFailure(request, "temporarily_unavailable"));
+    }
+  }
+
+  async complete(id: string, req: IncomingMessage, res: ServerResponse) {
+    const ticket = req.headers.cookie
+      ?.split(";")
+      .map((item) => item.trim())
+      .find((item) => item.startsWith(`__Host-connections-${id}=`))
+      ?.split("=")[1];
+    if (!ticket || !/^[A-Za-z0-9_-]{43}$/.test(ticket))
+      throw new HttpError(403, "enrollment_browser_required");
+    await this.queue.run(id, async () => {
+      const pending = this.store.enrollment(id, ticket);
+      if (!pending?.binding) throw new HttpError(409, "enrollment_unavailable");
+      const { binding, connectorId, request, ticketHash } = pending;
+      const account = await this.provider.inspectAccount(
+        binding,
+        AbortSignal.timeout(30_000),
+      );
+      if (account?.state === "pending")
+        throw new HttpError(409, "consent_pending");
+      if (account?.state !== "active") {
+        res.setHeader("set-cookie", enrollmentCookie(id, "", 0));
+        redirect(res, oauthFailure(request, "access_denied"));
+        return;
+      }
+
+      const result = new OAuth2Server.Response();
+      await this.#server.authorize(
+        new OAuth2Server.Request({
+          method: "GET",
+          headers: {},
+          query: request,
+        }),
+        result,
+        {
+          requirePKCE: true,
+          authorizationCodeLifetime: 120,
+          authenticateHandler: {
+            handle: () => ({
+              grantId: id,
+              ticketHash,
+              grant: { id, clientId: request.client_id, connectorId, binding },
+            }),
+          },
+        },
+      );
+      const location = result.get("location");
+      if (typeof location !== "string")
+        throw new HttpError(500, "server_error");
+      res.setHeader("set-cookie", enrollmentCookie(id, "", 0));
+      redirect(res, location);
+    });
+  }
+
+  async exchange(request: IncomingMessage, response: ServerResponse) {
+    const fields = await form(request);
+    if (
+      fields.grant_type !== "authorization_code" &&
+      fields.grant_type !== "refresh_token"
+    )
+      throw new HttpError(
+        400,
+        fields.grant_type ? "unsupported_grant_type" : "invalid_request",
+      );
+    const input = tokenRequest.safeParse(fields);
+    if (!input.success) throw new HttpError(400, "invalid_request");
+    const credentials = this.authenticateClient(request, input.data);
+    const result = new OAuth2Server.Response();
+    try {
+      await this.#server.token(
+        new OAuth2Server.Request({
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "content-length": String(
+              new URLSearchParams(fields).toString().length,
+            ),
+          },
+          query: {},
+          body: { ...input.data, ...credentials },
+        }),
+        result,
+        { requirePKCE: true },
+      );
+    } catch (error) {
+      if (
+        error instanceof OAuth2Server.InvalidGrantError ||
+        error instanceof OAuth2Server.InvalidRequestError
+      )
+        throw new HttpError(400, error.name);
+      throw error;
+    }
+    send(response, 200, result.body);
+  }
+
+  async revoke(request: IncomingMessage, response: ServerResponse) {
+    const input = revokeRequest.safeParse(await form(request));
+    if (!input.success) throw new HttpError(400, "invalid_request");
+    const { client_id } = this.authenticateClient(request, input.data);
+    const id = this.store.revocationTarget(client_id, input.data.token);
+    if (id) {
+      await this.queue.run(id, async () => {
+        this.store.revokeGrant(id, client_id);
+      });
+    }
+    send(response, 200);
+  }
+
+  access(header: string | undefined) {
+    const value = /^Bearer ([A-Za-z0-9_-]{1,256})$/i.exec(header ?? "")?.[1];
+    const token = value && this.store.credential("access", value);
+    if (!token || !this.#clients.has(token.clientId))
+      throw new HttpError(401, "invalid_token");
+    return token;
+  }
+}
+
+async function form(request: IncomingMessage) {
+  return parameters(
+    new URLSearchParams(
+      await body(request, "application/x-www-form-urlencoded", 16 * 1024),
+    ),
+  );
+}
+
+function decodeFormComponent(value: string) {
+  return decodeURIComponent(value.replaceAll("+", " "));
+}
+
+function enrollmentCookie(id: string, value: string, lifetime: number) {
+  return `__Host-connections-${id}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${lifetime}`;
+}
+
+function oauthFailure(
+  request: { redirect_uri: string; state: string },
+  code: string,
+) {
+  const location = new URL(request.redirect_uri);
+  location.searchParams.set("error", code);
+  location.searchParams.set("state", request.state);
+  return location.href;
+}

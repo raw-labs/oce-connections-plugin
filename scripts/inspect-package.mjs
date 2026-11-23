@@ -13,6 +13,7 @@ assert.equal(packed.name, "@raw-labs/oce-connections-plugin");
 assert.equal(packed.version, manifest.version);
 const paths = new Set(packed.files.map(({ path }) => path));
 for (const path of [
+  "dist/main.js",
   "dist/catalog.js",
   "assets/catalog.json",
   "skills/connections/SKILL.md",

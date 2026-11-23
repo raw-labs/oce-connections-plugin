@@ -1,0 +1,282 @@
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
+import { bindingSchema } from "./contracts.js";
+
+export const digest = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
+
+export const authorizationSchema = z.strictObject({
+  client_id: z.string().min(1).max(256),
+  redirect_uri: z.string().min(1).max(2048),
+  response_type: z.literal("code"),
+  code_challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  code_challenge_method: z.literal("S256"),
+  state: z.string().regex(/^[\x21-\x7e]{1,2048}$/),
+  scope: z.literal("connections").optional(),
+});
+export type Authorization = z.infer<typeof authorizationSchema>;
+
+const enrollmentSchema = z.object({
+  ticketHash: z.string(),
+  connectorId: z.string(),
+  request: authorizationSchema,
+  expiresAt: z.number(),
+  binding: bindingSchema.nullable(),
+});
+type Enrollment = z.infer<typeof enrollmentSchema>;
+
+export const grantSchema = z.object({
+  id: z.uuid(),
+  clientId: z.string(),
+  connectorId: z.string(),
+  binding: bindingSchema,
+});
+export type Grant = z.infer<typeof grantSchema>;
+
+const codeSchema = z.object({
+  grantId: z.uuid(),
+  clientId: z.string(),
+  expiresAt: z.number(),
+  redirectUri: z.string(),
+  challenge: z.string(),
+});
+type Code = z.infer<typeof codeSchema>;
+const credentialSchema = z.object({
+  grantId: z.uuid(),
+  clientId: z.string(),
+  expiresAt: z.number(),
+});
+type Credential = z.infer<typeof credentialSchema>;
+
+export class Store {
+  readonly #db: DatabaseSync;
+
+  constructor(file: string) {
+    const db = new DatabaseSync(file);
+    try {
+      // An instance owns this database until close. Recovery must never mark
+      // another instance's live dispatch as interrupted.
+      db.exec(`
+        PRAGMA locking_mode = EXCLUSIVE;
+        PRAGMA foreign_keys = ON;
+        BEGIN EXCLUSIVE;
+        CREATE TABLE IF NOT EXISTS enrollments (
+          id TEXT PRIMARY KEY, ticket_hash TEXT NOT NULL, connector_id TEXT NOT NULL,
+          request TEXT NOT NULL, expires_at INTEGER NOT NULL, binding TEXT
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS grants (
+          id TEXT PRIMARY KEY, client_id TEXT NOT NULL, connector_id TEXT NOT NULL,
+          account_id TEXT UNIQUE NOT NULL, binding TEXT NOT NULL, revoked_at INTEGER
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS codes (
+          hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id),
+          expires_at INTEGER NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS credentials (
+          hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id),
+          kind TEXT CHECK(kind IN ('access', 'refresh')) NOT NULL,
+          expires_at INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+        COMMIT;
+      `);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    this.#db = db;
+  }
+
+  close() {
+    this.#db.close();
+  }
+
+  transaction<T>(work: () => T): T {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = work();
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  startEnrollment(id: string, enrollment: Omit<Enrollment, "binding">) {
+    this.pruneOAuth();
+    this.#db
+      .prepare("INSERT INTO enrollments VALUES (?, ?, ?, ?, ?, NULL)")
+      .run(
+        id,
+        enrollment.ticketHash,
+        enrollment.connectorId,
+        JSON.stringify(enrollment.request),
+        enrollment.expiresAt,
+      );
+  }
+
+  setEnrollmentBinding(
+    id: string,
+    binding: Grant["binding"],
+    expiresAt: number,
+  ) {
+    this.#db
+      .prepare(
+        "UPDATE enrollments SET binding = ?, expires_at = min(expires_at, ?) WHERE id = ?",
+      )
+      .run(JSON.stringify(binding), expiresAt, id);
+  }
+
+  enrollment(id: string, ticket: string): Enrollment | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT ticket_hash AS ticketHash, connector_id AS connectorId, request,
+        expires_at AS expiresAt, binding FROM enrollments
+        WHERE id = ? AND ticket_hash = ? AND expires_at > ?`,
+      )
+      .get(id, digest(ticket), Date.now());
+    if (!row) return;
+    return enrollmentSchema.parse({
+      ...row,
+      request: JSON.parse(z.string().parse(row.request)),
+      binding:
+        row.binding === null ? null : JSON.parse(z.string().parse(row.binding)),
+    });
+  }
+
+  saveCode(
+    grant: Grant,
+    ticketHash: string,
+    code: string,
+    details: Omit<Code, "clientId" | "grantId">,
+  ): boolean {
+    return this.transaction(() => {
+      const consumed = this.#db
+        .prepare(
+          "DELETE FROM enrollments WHERE id = ? AND ticket_hash = ? AND expires_at > ?",
+        )
+        .run(grant.id, ticketHash, Date.now());
+      if (consumed.changes !== 1) return false;
+      this.#db
+        .prepare("INSERT INTO grants VALUES (?, ?, ?, ?, ?, NULL)")
+        .run(
+          grant.id,
+          grant.clientId,
+          grant.connectorId,
+          grant.binding.accountId,
+          JSON.stringify(grant.binding),
+        );
+      this.#db
+        .prepare("INSERT INTO codes VALUES (?, ?, ?, ?, ?)")
+        .run(
+          digest(code),
+          grant.id,
+          details.expiresAt,
+          details.redirectUri,
+          details.challenge,
+        );
+      return true;
+    });
+  }
+
+  code(value: string): Code | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT grant_id AS grantId, client_id AS clientId, expires_at AS expiresAt,
+        redirect_uri AS redirectUri, challenge FROM codes
+        JOIN grants ON grants.id = codes.grant_id WHERE hash = ? AND revoked_at IS NULL`,
+      )
+      .get(digest(value));
+    return row && codeSchema.parse(row);
+  }
+
+  consumeCode(value: string): boolean {
+    return (
+      this.#db.prepare("DELETE FROM codes WHERE hash = ?").run(digest(value))
+        .changes === 1
+    );
+  }
+
+  saveTokens(
+    grantId: string,
+    clientId: string,
+    access: string,
+    accessExpiry: number,
+    refresh: string,
+    refreshExpiry: number,
+  ): boolean {
+    return this.transaction(() => {
+      if (!this.grant(grantId, clientId)) return false;
+      const insert = this.#db.prepare(
+        "INSERT INTO credentials (hash, grant_id, kind, expires_at) VALUES (?, ?, ?, ?)",
+      );
+      insert.run(digest(access), grantId, "access", accessExpiry);
+      insert.run(digest(refresh), grantId, "refresh", refreshExpiry);
+      return true;
+    });
+  }
+
+  credential(
+    kind: "access" | "refresh",
+    value: string,
+  ): Credential | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT grant_id AS grantId, client_id AS clientId, expires_at AS expiresAt
+        FROM credentials JOIN grants ON grants.id = credentials.grant_id
+        WHERE hash = ? AND kind = ? AND consumed = 0 AND expires_at > ? AND revoked_at IS NULL`,
+      )
+      .get(digest(value), kind, Date.now());
+    return row && credentialSchema.parse(row);
+  }
+
+  consumeRefresh(value: string): boolean {
+    return (
+      this.#db
+        .prepare(
+          "UPDATE credentials SET consumed = 1 WHERE hash = ? AND kind = 'refresh' AND consumed = 0 AND expires_at > ?",
+        )
+        .run(digest(value), Date.now()).changes === 1
+    );
+  }
+
+  grant(id: string, clientId: string): Grant | undefined {
+    const row = this.#db
+      .prepare(
+        "SELECT id, client_id AS clientId, connector_id AS connectorId, binding FROM grants WHERE id = ? AND client_id = ? AND revoked_at IS NULL",
+      )
+      .get(id, clientId);
+    return (
+      row &&
+      grantSchema.parse({
+        ...row,
+        binding: JSON.parse(z.string().parse(row.binding)),
+      })
+    );
+  }
+
+  revocationTarget(clientId: string, value: string): string | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT id FROM grants JOIN credentials ON credentials.grant_id = grants.id
+        WHERE client_id = ? AND hash = ? AND expires_at > ? AND revoked_at IS NULL`,
+      )
+      .get(clientId, digest(value), Date.now());
+    return row && z.uuid().parse(row.id);
+  }
+
+  revokeGrant(id: string, clientId: string) {
+    this.#db
+      .prepare(
+        "UPDATE grants SET revoked_at = ? WHERE id = ? AND client_id = ? AND revoked_at IS NULL",
+      )
+      .run(Date.now(), id, clientId);
+  }
+
+  private pruneOAuth() {
+    const now = Date.now();
+    for (const table of ["enrollments", "codes", "credentials"])
+      this.#db.prepare(`DELETE FROM ${table} WHERE expires_at <= ?`).run(now);
+  }
+}
