@@ -100,11 +100,13 @@ export async function fixture(
       oauthClients: [
         {
           id: clientId,
+          connectorIds: ["github", "slack"],
           secretEnv: "TEST_OCE_SECRET",
           redirectUris: [redirectUri],
         },
         {
           id: "other-oce",
+          connectorIds: ["github"],
           secretEnv: "TEST_OCE_OTHER_SECRET",
           redirectUris: [redirectUri],
         },

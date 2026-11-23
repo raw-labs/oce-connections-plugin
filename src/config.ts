@@ -23,6 +23,7 @@ const fileSchema = z.strictObject({
       z.strictObject({
         id: z.string().regex(/^[A-Za-z0-9._~-]{1,256}$/),
         secretEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+        connectorIds: z.array(z.string().regex(/^[a-z0-9_]{1,80}$/)).min(1),
         redirectUris: z
           .array(
             httpsUrl.refine((value) => {
@@ -48,16 +49,18 @@ export function loadConfig(file: string, env: NodeJS.ProcessEnv) {
   )
     throw new Error("Duplicate OAuth client IDs.");
   const oauthClients = parsed.oauthClients.map(
-    ({ id, redirectUris, secretEnv }) => {
+    ({ id, connectorIds, redirectUris, secretEnv }) => {
       const secret = env[secretEnv];
       if (!secret || !/^[\x21-\x7e]{32,2048}$/.test(secret))
         throw new Error("Missing or invalid OAuth client secret.");
-      return { id, redirectUris, secret };
+      return { id, connectorIds, redirectUris, secret };
     },
   );
   const apiKey = env.COMPOSIO_API_KEY;
   if (!apiKey || !/^[\x21-\x7e]+$/.test(apiKey))
     throw new Error("Missing or invalid Composio project credential.");
+  if (oauthClients.some(({ secret }) => secret === apiKey))
+    throw new Error("OAuth clients must have their own credentials.");
   return {
     ...parsed,
     database: resolve(parsed.database),

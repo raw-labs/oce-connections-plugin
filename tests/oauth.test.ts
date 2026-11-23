@@ -34,6 +34,9 @@ await test(
     const plain = authorization(origin, "github").url;
     plain.searchParams.set("code_challenge_method", "plain");
     assert.equal((await fetch(plain)).status, 400);
+    const wrongClient = authorization(origin, "slack").url;
+    wrongClient.searchParams.set("client_id", "other-oce");
+    assert.equal((await fetch(wrongClient)).status, 400);
     assert.equal(provider.accounts.size, 0);
 
     const started = await startConsent(origin, "github");

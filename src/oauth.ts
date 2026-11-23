@@ -17,6 +17,7 @@ export interface ClientRegistration {
   id: string;
   secret: string;
   redirectUris: string[];
+  connectorIds: string[];
 }
 const scope = "connections";
 const lifetime = 10 * 60;
@@ -64,7 +65,15 @@ export class ConnectionsOAuth {
     private readonly provider: ConnectorProvider,
     private readonly authConfigIds: Record<string, string>,
   ) {
-    for (const client of clients) this.#clients.set(client.id, client);
+    for (const client of clients) {
+      if (
+        client.connectorIds.some(
+          (id) => !catalog.connectors.some((item) => item.id === id),
+        )
+      )
+        throw new Error("Unknown connector in OAuth client registration.");
+      this.#clients.set(client.id, client);
+    }
     const model: OAuth2Server.AuthorizationCodeModel &
       OAuth2Server.RefreshTokenModel = {
       getClient: async (id, secret) => {
@@ -93,7 +102,10 @@ export class ConnectionsOAuth {
       },
       getAuthorizationCode: async (value) => {
         const code = store.code(value);
-        const client = code && this.client(code.clientId);
+        const client =
+          code &&
+          this.enabledGrant(code.grantId, code.clientId) &&
+          this.client(code.clientId);
         return code && client
           ? {
               authorizationCode: value,
@@ -116,6 +128,7 @@ export class ConnectionsOAuth {
           !(token.accessTokenExpiresAt instanceof Date) ||
           typeof token.refreshToken !== "string" ||
           !(token.refreshTokenExpiresAt instanceof Date) ||
+          !this.enabledGrant(grantId, client.id) ||
           !store.saveTokens(
             grantId,
             client.id,
@@ -132,7 +145,10 @@ export class ConnectionsOAuth {
         requested.every((item) => token.scope?.includes(item)),
       getAccessToken: async (value) => {
         const token = store.credential("access", value);
-        const client = token && this.client(token.clientId);
+        const client =
+          token &&
+          this.enabledGrant(token.grantId, token.clientId) &&
+          this.client(token.clientId);
         return token && client
           ? {
               accessToken: value,
@@ -145,7 +161,10 @@ export class ConnectionsOAuth {
       },
       getRefreshToken: async (value) => {
         const token = store.credential("refresh", value);
-        const client = token && this.client(token.clientId);
+        const client =
+          token &&
+          this.enabledGrant(token.grantId, token.clientId) &&
+          this.client(token.clientId);
         return token && client
           ? {
               refreshToken: value,
@@ -164,6 +183,15 @@ export class ConnectionsOAuth {
       refreshTokenLifetime: 30 * 86400,
       alwaysIssueNewRefreshToken: true,
     });
+  }
+
+  private enabledGrant(id: string, clientId: string) {
+    const grant = this.store.grant(id, clientId);
+    if (
+      grant &&
+      this.#clients.get(clientId)?.connectorIds.includes(grant.connectorId)
+    )
+      return grant;
   }
 
   private client(id: string): OAuth2Server.Client | undefined {
@@ -223,12 +251,11 @@ export class ConnectionsOAuth {
     const input = authorizationSchema.safeParse(parameters(url.searchParams));
     if (!input.success) throw new HttpError(400, "invalid_request");
     const request = input.data;
-    if (
-      !this.#clients
-        .get(request.client_id)
-        ?.redirectUris.includes(request.redirect_uri)
-    )
+    const client = this.#clients.get(request.client_id);
+    if (!client?.redirectUris.includes(request.redirect_uri))
       throw new HttpError(400, "invalid_client");
+    if (!client.connectorIds.includes(connectorId))
+      throw new HttpError(400, "unauthorized_client");
     const connector = this.catalog.connectors.find(
       ({ id }) => id === connectorId,
     );
@@ -297,6 +324,12 @@ export class ConnectionsOAuth {
       const pending = this.store.enrollment(id, ticket);
       if (!pending?.binding) throw new HttpError(409, "enrollment_unavailable");
       const { binding, connectorId, request, ticketHash } = pending;
+      const client = this.#clients.get(request.client_id);
+      if (
+        !client?.redirectUris.includes(request.redirect_uri) ||
+        !client.connectorIds.includes(connectorId)
+      )
+        throw new HttpError(400, "unauthorized_client");
       const account = await this.provider.inspectAccount(
         binding,
         AbortSignal.timeout(30_000),
@@ -405,7 +438,7 @@ export class ConnectionsOAuth {
         { scope: [scope] },
       );
       const { grantId } = userSchema.parse(token.user);
-      const grant = this.store.grant(grantId, token.client.id);
+      const grant = this.enabledGrant(grantId, token.client.id);
       if (grant) return grant;
     } catch (error) {
       if (!(error instanceof OAuth2Server.InvalidTokenError)) throw error;
