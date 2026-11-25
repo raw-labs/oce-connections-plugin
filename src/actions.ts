@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
+import type { Action } from "./contracts.js";
 import type { ComposioCatalog } from "./catalog.js";
 import { body, HttpError, parameters, send } from "./http.js";
 import type { ConnectionsOAuth } from "./oauth.js";
@@ -85,11 +86,8 @@ export class Actions {
   async describe(req: IncomingMessage, res: ServerResponse, url: URL) {
     const { id } = parse(describeQuery, parameters(url.searchParams));
     const grant = await this.oauth.access(req.headers.authorization);
-    const signal = AbortSignal.timeout(30_000);
-    await this.requireActive(grant, signal);
-    const actions = await this.catalog.actions(grant.connectorId, signal);
-    const action = actions.find((item) => item.id === id);
-    if (!action) throw new HttpError(404, "action_unavailable");
+    const action = this.catalogAction(grant, id);
+    await this.requireActive(grant, AbortSignal.timeout(30_000));
     await this.oauth.access(req.headers.authorization);
     send(res, 200, { action });
   }
@@ -127,13 +125,10 @@ export class Actions {
           throw new HttpError(409, "request_id_conflict");
         return existing;
       }
-      const signal = AbortSignal.timeout(30_000);
-      const actions = await this.catalog.actions(grant.connectorId, signal);
-      const action = actions.find((item) => item.id === actionId);
-      if (!action) throw new HttpError(404, "action_unavailable");
+      const action = this.catalogAction(grant, actionId);
       if (action.version !== version)
         throw new HttpError(409, "action_version_changed");
-      await this.requireActive(grant, signal);
+      await this.requireActive(grant, AbortSignal.timeout(30_000));
 
       // Authority is checked again after provider I/O and before the durable claim.
       this.store.pruneResults();
@@ -184,6 +179,14 @@ export class Actions {
     const receipt = this.store.receipt(grant.id, input.requestId);
     if (!receipt) throw new HttpError(404, "receipt_unavailable");
     send(res, 200, presentReceipt(receipt, input.cursor));
+  }
+
+  private catalogAction(grant: Grant, id: string): Action {
+    const actions = this.catalog.cachedActions(grant.connectorId);
+    if (!actions) throw new HttpError(409, "catalog_refresh_required");
+    const action = actions.find((item) => item.id === id);
+    if (!action) throw new HttpError(404, "action_unavailable");
+    return action;
   }
 
   private async requireActive(grant: Grant, signal: AbortSignal) {

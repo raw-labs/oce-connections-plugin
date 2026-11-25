@@ -11,7 +11,11 @@ await test(
   { timeout: 20_000 },
   async (t) => {
     const provider = new ComposioFixture();
-    const service = await fixture(t, provider.handle);
+    const upstreamRequests: string[] = [];
+    const service = await fixture(t, async (req, res, origin) => {
+      upstreamRequests.push(req.url ?? "");
+      await provider.handle(req, res, origin);
+    });
     const github = await enroll(service.origin, "github");
     const slack = await enroll(service.origin, "slack");
     const version = "20261112_00";
@@ -37,7 +41,17 @@ await test(
         body: JSON.stringify(params),
       });
 
+    upstreamRequests.length = 0;
     assert.equal((await get("/v1/actions", github.refresh_token)).status, 401);
+    const cold = await run(proposed, slack.access_token);
+    assert.equal(cold.status, 409);
+    assert.deepEqual(await cold.json(), { error: "catalog_refresh_required" });
+    assert.equal(
+      (await get("/v1/action?id=GITHUB_READ_ACCOUNT", slack.access_token))
+        .status,
+      409,
+    );
+    assert.deepEqual(upstreamRequests, []);
     const catalog: unknown = await (await get("/v1/actions?limit=1")).json();
     assert.ok(
       catalog &&
@@ -49,6 +63,8 @@ await test(
       catalog.items.map((item: { id: string }) => item.id),
       [actionId],
     );
+    assert.equal((await get("/v1/actions", slack.access_token)).status, 200);
+    upstreamRequests.length = 0;
     assert.equal(
       (await get("/v1/action?id=COMPOSIO_PROXY_EXECUTE")).status,
       404,
@@ -68,6 +84,7 @@ await test(
       (await run({ ...proposed, upstreamUrl: "https://example.test" })).status,
       400,
     );
+    assert.deepEqual(upstreamRequests, []);
     assert.equal(provider.executions.length, 0);
 
     const [first, duplicate] = await Promise.all([

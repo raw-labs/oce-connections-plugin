@@ -104,7 +104,11 @@ test CA, set `OCE_CONNECTIONS_CA_FILE` to its PEM certificate.
 The Bearer grant selects the account for search, description, execution and
 receipt lookup. Discovery uses the active account's toolkit and excludes
 deprecated actions, custom actions and known raw proxy actions. The service
-caches the toolkit catalog for five minutes. Downstream
+caches the toolkit catalog for five minutes. Run `actions` to populate it.
+After expiry or restart, `describe` and new `run` calls return
+`catalog_refresh_required` until discovery repopulates it. Unknown actions,
+stale versions and invalid call envelopes are rejected before provider I/O.
+Downstream
 provider scopes and resource permissions are enforced when Composio executes
 the action. The service checks the current account binding and exact action
 version before constructing the upstream request. It accepts bounded JSON

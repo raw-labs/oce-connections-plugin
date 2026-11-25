@@ -44,9 +44,14 @@ export class ComposioCatalog {
     if (!found) throw invalidResponse("not_started");
     return found;
   }
-  async actions(id: string, signal: AbortSignal): Promise<Action[]> {
+  cachedActions(id: string): Action[] | undefined {
     const cached = this.cache.get(id);
     if (cached && cached.expires > Date.now()) return cached.actions;
+  }
+
+  async actions(id: string, signal: AbortSignal): Promise<Action[]> {
+    const cached = this.cachedActions(id);
+    if (cached) return cached;
     const connector = this.connector(id);
     const actions: Action[] = [];
     const seen = new Set<string>();

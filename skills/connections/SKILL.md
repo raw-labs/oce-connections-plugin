@@ -11,7 +11,8 @@ deployment instructions. Ask the user which saved account to use if it is unclea
 OCE owns sign-in and Agent grants. Direct a user to OCE for missing or expired access.
 
 1. Run `oce-connections actions --query 'search terms'`. Use `--cursor` with
-   `nextCursor` to see more results.
+   `nextCursor` to see more results. Run `actions` again if the service
+   returns `catalog_refresh_required`, then describe the action again.
 2. Run `oce-connections describe ACTION`. Read the argument schema, which is
    advisory, and use the exact version returned.
 3. When authorized to perform the action, send a JSON object on stdin.

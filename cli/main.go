@@ -260,7 +260,7 @@ func send(slot string, command command) ([]byte, error) {
 func knownError(code string) bool {
 	switch code {
 	case "invalid_request", "invalid_arguments", "invalid_token", "action_unavailable",
-		"action_version_changed", "account_unavailable", "receipt_unavailable",
+		"action_version_changed", "catalog_refresh_required", "account_unavailable", "receipt_unavailable",
 		"request_id_conflict", "invalid_result_cursor", "request_too_large",
 		"provider_unavailable", "server_error":
 		return true
