@@ -114,10 +114,14 @@ export interface ConnectorProvider {
     input: {
       authConfigurationId: string;
       subjectId: string;
-      callbackUrl: string;
     },
     signal: AbortSignal,
   ): Promise<{ accountId: string; connectUrl: string; expiresAt: string }>;
+  completeSetup(
+    binding: ConnectorProviderBinding,
+    sessionUri: string,
+    signal: AbortSignal,
+  ): Promise<void>;
   inspectAccount(
     binding: ConnectorProviderBinding,
     signal: AbortSignal,

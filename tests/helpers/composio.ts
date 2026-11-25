@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { apiKey, respond } from "./https.js";
@@ -6,7 +7,10 @@ import { apiKey, respond } from "./https.js";
 const setupRequest = z.strictObject({
   auth_config_id: z.string(),
   user_id: z.string(),
-  callback_url: z.url(),
+});
+const verificationRequest = z.strictObject({
+  session_uri: z.string(),
+  user_id: z.string(),
 });
 
 const execution = z.strictObject({
@@ -20,6 +24,7 @@ export class ComposioFixture {
   executions: Array<{ action: string; account: string; arguments: unknown }> =
     [];
   onDispatch: (() => Promise<void>) | undefined;
+  private readonly sessions = new Map<string, string>();
 
   accounts = new Map<
     string,
@@ -29,7 +34,6 @@ export class ComposioFixture {
       auth_config: { id: string };
       user_id: string;
       status: string;
-      callback: string;
     }
   >();
 
@@ -37,6 +41,7 @@ export class ComposioFixture {
     request: IncomingMessage,
     res: ServerResponse,
     origin: string,
+    issuer: string,
   ) => {
     const url = new URL(request.url ?? "", origin);
     const method = request.method;
@@ -45,9 +50,10 @@ export class ComposioFixture {
       assert.equal(request.headers["x-api-key"], undefined);
       const account = this.accounts.get(url.pathname.slice("/consent/".length));
       assert.ok(account);
-      account.status = "ACTIVE";
-      const callback = new URL(account.callback);
-      callback.searchParams.set("connected_account_id", account.id);
+      const session = randomBytes(32).toString("base64url");
+      this.sessions.set(session, account.id);
+      const callback = new URL("/oauth/complete", issuer);
+      callback.searchParams.set("session_uri", session);
       res.writeHead(302, { location: callback.href }).end();
       return;
     }
@@ -81,12 +87,35 @@ export class ComposioFixture {
         auth_config: { id: input.auth_config_id },
         user_id: input.user_id,
         status: "INITIATED",
-        callback: input.callback_url,
       });
       respond(res, {
         connected_account_id: id,
         redirect_url: `${origin}/consent/${id}`,
         expires_at: new Date(Date.now() + 900_000).toISOString(),
+      });
+      return;
+    }
+    if (
+      method === "POST" &&
+      url.pathname === "/api/v3.1/connected_accounts/complete_auth"
+    ) {
+      const input = verificationRequest.parse(await readJson(request));
+      const id = this.sessions.get(input.session_uri);
+      this.sessions.delete(input.session_uri);
+      const account = id && this.accounts.get(id);
+      if (!account) {
+        res.writeHead(404).end();
+        return;
+      }
+      if (input.user_id !== account.user_id) {
+        account.status = "FAILED";
+        res.writeHead(400).end();
+        return;
+      }
+      account.status = "ACTIVE";
+      respond(res, {
+        connected_account_id: account.id,
+        toolkit_slug: account.toolkit.slug,
       });
       return;
     }

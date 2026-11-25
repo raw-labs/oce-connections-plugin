@@ -22,6 +22,10 @@ export interface ClientRegistration {
 }
 const { scope } = oauthProtocol;
 const lifetime = 10 * 60;
+const browserCookieName = "__Host-connections-enrollment";
+const callbackQuery = z.strictObject({
+  session_uri: z.string().regex(/^[\x21-\x7e]{1,4096}$/),
+});
 const oauthCredential = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
 const clientFields = {
   client_id: z.string().max(256).optional(),
@@ -59,7 +63,6 @@ export class ConnectionsOAuth {
 
   constructor(
     clients: ClientRegistration[],
-    private readonly origin: string,
     private readonly store: Store,
     private readonly queue: Queue,
     private readonly catalog: ComposioCatalog,
@@ -271,7 +274,6 @@ export class ConnectionsOAuth {
     const id = randomUUID();
     const subjectId = `oce_connections_${id}`;
     const ticket = randomBytes(32).toString("base64url");
-    const callback = new URL(`/oauth/complete/${id}`, this.origin);
     const expiresAt = Date.now() + lifetime * 1000;
     this.store.startEnrollment(id, {
       request,
@@ -295,7 +297,7 @@ export class ConnectionsOAuth {
           ),
         ));
       const setup = await this.provider.createSetup(
-        { authConfigurationId, subjectId, callbackUrl: callback.href },
+        { authConfigurationId, subjectId },
         signal,
       );
       this.store.setEnrollmentBinding(
@@ -308,21 +310,25 @@ export class ConnectionsOAuth {
         },
         Date.parse(setup.expiresAt),
       );
-      response.setHeader("set-cookie", enrollmentCookie(id, ticket, lifetime));
+      response.setHeader("set-cookie", enrollmentCookie(`${id}.${ticket}`));
       redirect(response, setup.connectUrl);
     } catch {
       redirect(response, oauthFailure(request, "temporarily_unavailable"));
     }
   }
 
-  async complete(id: string, req: IncomingMessage, res: ServerResponse) {
-    const ticket = req.headers.cookie
+  async complete(url: URL, req: IncomingMessage, res: ServerResponse) {
+    const browser = req.headers.cookie
       ?.split(";")
       .map((item) => item.trim())
-      .find((item) => item.startsWith(`__Host-connections-${id}=`))
-      ?.split("=")[1];
-    if (!ticket || !/^[A-Za-z0-9_-]{43}$/.test(ticket))
-      throw new HttpError(403, "enrollment_browser_required");
+      .find((item) => item.startsWith(`${browserCookieName}=`))
+      ?.slice(browserCookieName.length + 1);
+    const [, id, ticket] =
+      /^([a-f0-9-]{36})\.([A-Za-z0-9_-]{43})$/.exec(browser ?? "") ?? [];
+    if (!id || !ticket) throw new HttpError(403, "enrollment_browser_required");
+    const callback = callbackQuery.safeParse(parameters(url.searchParams));
+    if (!callback.success)
+      throw new HttpError(400, "provider_session_required");
     await this.queue.run(id, async () => {
       const pending = this.store.enrollment(id, ticket);
       if (!pending?.binding) throw new HttpError(409, "enrollment_unavailable");
@@ -333,14 +339,16 @@ export class ConnectionsOAuth {
         !client.connectorIds.includes(connectorId)
       )
         throw new HttpError(400, "unauthorized_client");
-      const account = await this.provider.inspectAccount(
+      // Composio activates only the session whose subject matches this browser's enrollment.
+      const signal = AbortSignal.timeout(45_000);
+      await this.provider.completeSetup(
         binding,
-        AbortSignal.timeout(30_000),
+        callback.data.session_uri,
+        signal,
       );
-      if (account?.state === "pending")
-        throw new HttpError(409, "consent_pending");
+      res.setHeader("set-cookie", enrollmentCookie(""));
+      const account = await this.provider.inspectAccount(binding, signal);
       if (account?.state !== "active") {
-        res.setHeader("set-cookie", enrollmentCookie(id, "", 0));
         redirect(res, oauthFailure(request, "access_denied"));
         return;
       }
@@ -368,7 +376,6 @@ export class ConnectionsOAuth {
       const location = result.get("location");
       if (typeof location !== "string")
         throw new HttpError(500, "server_error");
-      res.setHeader("set-cookie", enrollmentCookie(id, "", 0));
       redirect(res, location);
     });
   }
@@ -458,8 +465,8 @@ function decodeFormComponent(value: string) {
   return decodeURIComponent(value.replaceAll("+", " "));
 }
 
-function enrollmentCookie(id: string, value: string, lifetime: number) {
-  return `__Host-connections-${id}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${lifetime}`;
+function enrollmentCookie(value: string) {
+  return `${browserCookieName}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${value ? lifetime : 0}`;
 }
 
 function oauthFailure(

@@ -84,15 +84,6 @@ class ComposioProvider implements ConnectorProvider {
   ): ReturnType<ConnectorProvider["createSetup"]> {
     requireInputText(input.authConfigurationId);
     requireInputText(input.subjectId);
-    try {
-      requireHttps(input.callbackUrl, "not_started");
-    } catch {
-      throw new ConnectorProviderError(
-        "connector_provider_request_invalid",
-        "Connection callback must use HTTPS.",
-        "not_started",
-      );
-    }
     const response = await this.http.request({
       method: "POST",
       path: "/api/v3.1/connected_accounts/link",
@@ -100,7 +91,6 @@ class ComposioProvider implements ConnectorProvider {
       body: {
         auth_config_id: input.authConfigurationId,
         user_id: input.subjectId,
-        callback_url: input.callbackUrl,
       },
     });
     if (response.missing) throw invalidResponse("outcome_unknown");
@@ -119,6 +109,28 @@ class ComposioProvider implements ConnectorProvider {
       connectUrl,
       expiresAt,
     };
+  }
+
+  async completeSetup(
+    binding: ConnectorProviderBinding,
+    sessionUri: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    requireBinding(binding);
+    requireInputText(sessionUri);
+    const response = await this.http.request({
+      method: "POST",
+      path: "/api/v3.1/connected_accounts/complete_auth",
+      signal,
+      body: { session_uri: sessionUri, user_id: binding.subjectId },
+    });
+    if (response.missing) throw invalidResponse("outcome_unknown");
+    const body = record(response.data, "outcome_unknown");
+    if (
+      body.connected_account_id !== binding.accountId ||
+      body.toolkit_slug !== binding.toolkit
+    )
+      throw invalidResponse("outcome_unknown");
   }
 
   async inspectAccount(

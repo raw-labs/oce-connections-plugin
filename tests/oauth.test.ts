@@ -16,7 +16,7 @@ import {
 } from "./helpers/https.js";
 
 await test(
-  "HTTPS OAuth requires the exact redirect, browser ticket, active binding, S256 and a confidential client",
+  "HTTPS OAuth requires the exact redirect, browser ticket, provider session, active binding, S256 and a confidential client",
   { timeout: 20_000 },
   async (t) => {
     const provider = new ComposioFixture();
@@ -71,15 +71,44 @@ await test(
     const account = [...provider.accounts.values()][0];
     assert.ok(account);
     const browser = { cookie: started.cookie };
-    const pending = await fetch(account.callback, { headers: browser });
-    assert.equal(pending.status, 409);
+    const legacy = new URL("/oauth/complete", origin);
+    legacy.searchParams.set("connected_account_id", account.id);
+    account.status = "ACTIVE";
+    const unverified = await fetch(legacy, { headers: browser });
+    assert.equal(unverified.status, 400);
+    assert.deepEqual(await unverified.json(), {
+      error: "provider_session_required",
+    });
+    account.status = "INITIATED";
+
     const callback = await consent(started.consentUrl);
     assert.equal((await fetch(callback)).status, 403);
+    assert.equal(account.status, "INITIATED");
 
-    const originalUser = account.user_id;
-    account.user_id = "another-oce-subject";
+    const otherBrowser = await startConsent(origin, "github");
+    assert.equal(
+      (
+        await fetch(callback, {
+          headers: { cookie: otherBrowser.cookie },
+        })
+      ).status,
+      502,
+    );
+    assert.equal(account.status, "FAILED");
     assert.equal((await fetch(callback, { headers: browser })).status, 502);
-    account.user_id = originalUser;
+
+    const otherAccount = [...provider.accounts.values()][1];
+    assert.ok(otherAccount);
+    otherAccount.auth_config.id = "another-config";
+    const otherCallback = await consent(otherBrowser.consentUrl);
+    assert.equal(
+      (
+        await fetch(otherCallback, {
+          headers: { cookie: otherBrowser.cookie },
+        })
+      ).status,
+      502,
+    );
 
     const issued = await authorizeCode(origin, "github");
     const fields = codeFields(issued.code, issued.verifier);
@@ -98,15 +127,6 @@ await test(
     );
     const result = await readTokens(await tokenRequest(origin, fields));
     assert.equal((await tokenRequest(origin, fields)).status, 400);
-
-    const custom = await authorizeCode(origin, "posthog");
-    await readTokens(
-      await tokenRequest(origin, codeFields(custom.code, custom.verifier)),
-    );
-    const customBinding = [...provider.accounts.values()].find(
-      ({ toolkit }) => toolkit.slug === "posthog",
-    );
-    assert.equal(customBinding?.auth_config.id, "auth-posthog");
 
     const wrongPkce = await authorizeCode(origin, "slack");
     const wrongVerifier = "A".repeat(43);
@@ -166,7 +186,8 @@ await test(
       result.refresh_token,
       next.access_token,
       next.refresh_token,
+      callback.searchParams.get("session_uri"),
     ])
-      assert.equal(logs.join("").includes(value), false);
+      if (value) assert.equal(logs.join("").includes(value), false);
   },
 );

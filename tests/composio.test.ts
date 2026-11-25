@@ -156,7 +156,6 @@ await test("same-service setup creates distinct hosted accounts with the generic
   const input = {
     authConfigurationId: binding.authConfigurationId,
     subjectId: binding.subjectId,
-    callbackUrl: "https://connections.example.test/connections/verify",
   };
   const first = await provider.createSetup(input, signal());
   const second = await provider.createSetup(input, signal());
@@ -166,7 +165,6 @@ await test("same-service setup creates distinct hosted accounts with the generic
     [1, 2].map(() => ({
       auth_config_id: input.authConfigurationId,
       user_id: input.subjectId,
-      callback_url: input.callbackUrl,
     })),
   );
 });

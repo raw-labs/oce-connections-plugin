@@ -12,9 +12,9 @@ await test(
   async (t) => {
     const provider = new ComposioFixture();
     const upstreamRequests: string[] = [];
-    const service = await fixture(t, async (req, res, origin) => {
+    const service = await fixture(t, async (req, res, backend, issuer) => {
       upstreamRequests.push(req.url ?? "");
-      await provider.handle(req, res, origin);
+      await provider.handle(req, res, backend, issuer);
     });
     const github = await enroll(service.origin, "github");
     const slack = await enroll(service.origin, "slack");

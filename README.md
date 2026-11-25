@@ -30,8 +30,9 @@ Composio backend provides two GitHub accounts and a Slack account. The suite
 checks exact account binding, unauthorized actions and overrides, refresh and
 revocation, credential handling, and restart and interrupted-dispatch recovery.
 It also builds Linux ARM64 and AMD64 dev overlays and checks the generated
-request selectors and OAuth settings. The tests need permission to listen on loopback. They use
-temporary databases and a test CA, with ordinary HTTPS verification enabled.
+request selectors and OAuth settings. The tests need permission to listen on
+loopback. They use temporary databases and a test CA, with ordinary HTTPS
+verification enabled.
 
 ## Run the HTTPS service
 
@@ -49,6 +50,10 @@ node dist/main.js .local/service.json
   The public `origin` is the canonical OAuth issuer and Composio callback
   origin. If using the sample OCE slot aliases, route each HTTPS origin to the
   service and cover the issuer and each alias with valid TLS certificates.
+- Use a dedicated Composio project. Set its **Callback identity verification**
+  URL to `https://YOUR_CONNECTIONS_ISSUER/oauth/complete`. Composio requires
+  a public HTTPS URL for this project setting. The local test backend supplies
+  the same callback contract over loopback. [Composio callback verification](https://docs.composio.dev/reference/api-reference/connected-accounts#callback-identity-verification)
 - Set `COMPOSIO_API_KEY` only in the service environment. For each confidential
   OAuth client, list its permitted `connectorIds`, full redirect URIs and the
   environment variable that supplies its distinct secret. Use a random secret
@@ -57,9 +62,9 @@ node dist/main.js .local/service.json
   `client_secret_post`.
 - The service uses the [fork's catalog](assets/catalog.json). Composio-managed
   connectors reuse a matching enabled auth configuration or create one through
-  Composio. Set `authConfigIds` for connectors that require an existing Composio
-  auth configuration, including PostHog and Bing Webmaster Tools. Their
-  downstream credential is supplied through Composio's hosted flow.
+  Composio. Use `authConfigIds` for existing OAuth auth configurations. New
+  enrollments require a Composio configuration that supports OAuth callback
+  verification. API-key-only setups cannot complete this flow.
 - Store the database on a private, persistent local volume. Run one service
   process per database. Stop it before copying the file for backup. Treat the
   database as sensitive because it holds account references and action results.
@@ -69,12 +74,14 @@ metadata at `/.well-known/oauth-authorization-server`. Every template uses
 `GET /oauth/authorize` and supplies its `connector` separately in OCE
 `authorizationParameters`. Connections checks the connector against the
 registered client before creating a browser ticket and starting Composio
-consent. OCE supplies state and S256 PKCE. On
-callback, it checks the browser ticket and reads the enrolled Composio account
-server-side. Only an active account matching the account ID, subject, toolkit
-and auth configuration can produce a code. The browser can retry the callback
-while consent is pending. An enrollment expires after ten minutes or sooner
-if Composio's setup expires.
+consent. OCE supplies state and S256 PKCE. The callback needs both the
+original browser ticket and Composio's single-use session proof. The service
+redeems the proof for the enrolled subject and reads the account server-side.
+Only an active account matching the account ID, subject, toolkit and auth
+configuration can produce a code. Finish one enrollment at a time in each
+browser. An enrollment expires after ten minutes or sooner if Composio's setup
+expires. If verification fails after the proof is consumed, start a new
+enrollment.
 
 `POST /oauth/token` exchanges a two-minute, single-use code for a five-minute
 access token and a 30-day rotating refresh token. Code and token values are

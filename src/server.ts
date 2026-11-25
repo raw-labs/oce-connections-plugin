@@ -31,7 +31,6 @@ export function connectionsServer(options: {
   const store = new Store(options.database);
   const oauth = new ConnectionsOAuth(
     options.oauthClients,
-    options.origin,
     store,
     queue,
     catalog,
@@ -120,11 +119,8 @@ export function connectionsServer(options: {
           await oauth.authorize(url, response);
           return;
         }
-        const enrollment = /^\/oauth\/complete\/([a-f0-9-]{36})$/.exec(
-          url.pathname,
-        )?.[1];
-        if (enrollment) {
-          await oauth.complete(enrollment, request, response);
+        if (url.pathname === "/oauth/complete") {
+          await oauth.complete(url, request, response);
           return;
         }
       }

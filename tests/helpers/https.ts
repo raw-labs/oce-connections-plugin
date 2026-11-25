@@ -34,7 +34,8 @@ export async function fixture(
   handle: (
     req: IncomingMessage,
     res: ServerResponse,
-    origin: string,
+    backend: string,
+    issuer: string,
   ) => Promise<void>,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "oce-connections-"));
@@ -71,8 +72,12 @@ export async function fixture(
   setDefaultCACertificates([...originalCAs, tls.cert.toString()]);
   t.after(() => setDefaultCACertificates(originalCAs));
 
+  const temporary = tcpServer();
+  const port = await listen(temporary);
+  await new Promise<void>((resolve) => temporary.close(() => resolve()));
+  const origin = `https://127.0.0.1:${port}`;
   const provider = createServer(tls, (req, res) => {
-    handle(req, res, backend).catch((error: unknown) => {
+    handle(req, res, backend, origin).catch((error: unknown) => {
       errors.push(error);
       res.writeHead(500).end();
     });
@@ -84,10 +89,6 @@ export async function fixture(
     });
     assert.deepEqual(errors, []);
   });
-  const temporary = tcpServer();
-  const port = await listen(temporary);
-  await new Promise<void>((resolve) => temporary.close(() => resolve()));
-  const origin = `https://127.0.0.1:${port}`;
   await writeFile(
     config,
     JSON.stringify({
@@ -100,7 +101,7 @@ export async function fixture(
       oauthClients: [
         {
           id: clientId,
-          connectorIds: ["github", "slack", "posthog"],
+          connectorIds: ["github", "slack"],
           secretEnv: "TEST_OCE_SECRET",
           redirectUris: [redirectUri],
         },
@@ -111,7 +112,7 @@ export async function fixture(
           redirectUris: [redirectUri],
         },
       ],
-      authConfigIds: { slack: "auth-slack", posthog: "auth-posthog" },
+      authConfigIds: { slack: "auth-slack" },
     }),
   );
   const serviceEnv = {
