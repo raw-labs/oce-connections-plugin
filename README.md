@@ -81,7 +81,8 @@ Only an active account matching the account ID, subject, toolkit and auth
 configuration can produce a code. Finish one enrollment at a time in each
 browser. An enrollment expires after ten minutes or sooner if Composio's setup
 expires. If verification fails after the proof is consumed, start a new
-enrollment.
+enrollment. A service instance accepts up to 32 pending enrollments and one
+verification at a time per enrollment.
 
 `POST /oauth/token` exchanges a two-minute, single-use code for a five-minute
 access token and a 30-day rotating refresh token. Code and token values are
@@ -121,8 +122,7 @@ caches the toolkit catalog for five minutes. Run `actions` to populate it.
 After expiry or restart, `describe` and new `run` calls return
 `catalog_refresh_required` until discovery repopulates it. Unknown actions,
 stale versions and invalid call envelopes are rejected before provider I/O.
-Downstream
-provider scopes and resource permissions are enforced when Composio executes
+Downstream provider scopes and resource permissions apply when Composio executes
 the action. The service checks the current account binding and exact action
 version before constructing the upstream request. It accepts bounded JSON
 arguments and treats provider schemas as advisory.
@@ -135,6 +135,9 @@ remains `outcome_unknown` and the request is never automatically replayed.
 Use `receipt` and reconcile the provider-side outcome before another
 mutation. Result data is available for seven days. Large results are paged.
 Request IDs and outcomes remain so the service can refuse replays.
+An instance accepts up to eight active or queued dispatches per grant and
+128 total queued or active operations in the dispatch and auth-config queue.
+Excess dispatches return `too_many_pending_requests` before any provider I/O.
 
 ## OCE development integration
 

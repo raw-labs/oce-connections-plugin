@@ -262,7 +262,7 @@ func knownError(code string) bool {
 	case "invalid_request", "invalid_arguments", "invalid_token", "action_unavailable",
 		"action_version_changed", "catalog_refresh_required", "account_unavailable", "receipt_unavailable",
 		"request_id_conflict", "invalid_result_cursor", "request_too_large",
-		"provider_unavailable", "server_error":
+		"too_many_pending_requests", "provider_unavailable", "server_error":
 		return true
 	default:
 		return false

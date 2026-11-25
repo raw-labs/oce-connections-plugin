@@ -10,6 +10,7 @@ import {
   codeFields,
   consent,
   fixture,
+  location,
   readTokens,
   startConsent,
   tokenRequest,
@@ -189,5 +190,60 @@ await test(
       callback.searchParams.get("session_uri"),
     ])
       if (value) assert.equal(logs.join("").includes(value), false);
+  },
+);
+
+await test(
+  "public OAuth limits pending enrollments and simultaneous verification of the same enrollment",
+  { timeout: 20_000 },
+  async (t) => {
+    const provider = new ComposioFixture();
+    const verifying = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const { origin } = await fixture(t, async (req, res, backend, issuer) => {
+      if (req.url === "/api/v3.1/connected_accounts/complete_auth") {
+        verifying.resolve();
+        await resume.promise;
+      }
+      await provider.handle(req, res, backend, issuer);
+    });
+    const first = await startConsent(origin, "slack");
+    await Promise.all(
+      Array.from({ length: 31 }, () => startConsent(origin, "slack")),
+    );
+    assert.equal(provider.accounts.size, 32);
+    const extra = authorization(origin, "slack");
+    const refused = await fetch(extra.url, { redirect: "manual" });
+    assert.equal(refused.status, 302);
+    assert.equal(refused.headers.has("set-cookie"), false);
+    assert.equal(
+      location(refused).searchParams.get("error"),
+      "temporarily_unavailable",
+    );
+    assert.equal(location(refused).searchParams.get("state"), extra.state);
+    assert.equal(provider.accounts.size, 32);
+
+    const callback = await consent(first.consentUrl);
+    const options: RequestInit = {
+      headers: { cookie: first.cookie },
+      redirect: "manual",
+    };
+    const completing = fetch(callback, options);
+    await verifying.promise;
+    try {
+      const concurrent = await fetch(callback, {
+        ...options,
+        signal: AbortSignal.timeout(2_000),
+      });
+      assert.equal(concurrent.status, 409);
+      assert.deepEqual(await concurrent.json(), {
+        error: "enrollment_in_progress",
+      });
+    } finally {
+      resume.resolve();
+    }
+    assert.ok(location(await completing).searchParams.get("code"));
+    await startConsent(origin, "slack");
+    assert.equal(provider.accounts.size, 33);
   },
 );

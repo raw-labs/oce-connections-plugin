@@ -34,6 +34,7 @@ await test(
     const run = (params: object, token = github.access_token) =>
       fetch(service.origin + "/v1/calls", {
         method: "POST",
+        signal: AbortSignal.timeout(5_000),
         headers: {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
@@ -222,8 +223,15 @@ await test(
     };
     const dispatch = run({ ...proposed, requestId: randomUUID() });
     await inFlight.promise;
-    const queued = run({ ...proposed, requestId: randomUUID() });
+    const queued = Array.from({ length: 8 }, () =>
+      run({ ...proposed, requestId: randomUUID() }),
+    );
     try {
+      const overflow = await Promise.race(queued);
+      assert.equal(overflow.status, 429);
+      assert.deepEqual(await overflow.json(), {
+        error: "too_many_pending_requests",
+      });
       assert.equal(
         (await revoke(service.origin, github.refresh_token)).status,
         200,
@@ -234,7 +242,10 @@ await test(
       provider.onDispatch = undefined;
     }
     assert.equal((await dispatch).status, 401);
-    assert.equal((await queued).status, 401);
+    assert.deepEqual(
+      (await Promise.all(queued)).map(({ status }) => status).sort(),
+      [401, 401, 401, 401, 401, 401, 401, 429],
+    );
     assert.equal(provider.executions.length, 6);
     assert.equal((await get("/v1/actions")).status, 401);
     assert.equal((await get("/v1/actions", slack.access_token)).status, 200);

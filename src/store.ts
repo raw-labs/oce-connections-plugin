@@ -65,6 +65,7 @@ export type Completion = Pick<Receipt, "detail" | "result"> & {
 };
 
 const receiptRetention = 7 * 86400_000;
+const maximumPendingEnrollments = 32;
 
 export class Store {
   readonly #db: DatabaseSync;
@@ -105,6 +106,9 @@ export class Store {
         CREATE INDEX IF NOT EXISTS receipts_by_request ON receipts (grant_id, request_id COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS receipt_results_expiry ON receipts (expires_at)
           WHERE result IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS enrollment_expiry ON enrollments (expires_at);
+        CREATE INDEX IF NOT EXISTS code_expiry ON codes (expires_at);
+        CREATE INDEX IF NOT EXISTS credential_expiry ON credentials (expires_at);
         UPDATE receipts SET status = 'outcome_unknown', detail = 'dispatch_interrupted'
           WHERE status = 'dispatching';
         COMMIT;
@@ -134,15 +138,21 @@ export class Store {
 
   startEnrollment(id: string, enrollment: Omit<Enrollment, "binding">) {
     this.pruneOAuth();
-    this.#db
-      .prepare("INSERT INTO enrollments VALUES (?, ?, ?, ?, ?, NULL)")
-      .run(
-        id,
-        enrollment.ticketHash,
-        enrollment.connectorId,
-        JSON.stringify(enrollment.request),
-        enrollment.expiresAt,
-      );
+    return (
+      this.#db
+        .prepare(
+          `INSERT INTO enrollments (id, ticket_hash, connector_id, request, expires_at)
+           SELECT ?, ?, ?, ?, ? WHERE (SELECT count(*) FROM enrollments) < ?`,
+        )
+        .run(
+          id,
+          enrollment.ticketHash,
+          enrollment.connectorId,
+          JSON.stringify(enrollment.request),
+          enrollment.expiresAt,
+          maximumPendingEnrollments,
+        ).changes === 1
+    );
   }
 
   setEnrollmentBinding(

@@ -59,6 +59,7 @@ const enrollmentUserSchema = userSchema.extend({
 
 export class ConnectionsOAuth {
   readonly #clients = new Map<string, ClientRegistration>();
+  readonly #verifying = new Set<string>();
   readonly #server: OAuth2Server;
 
   constructor(
@@ -275,12 +276,17 @@ export class ConnectionsOAuth {
     const subjectId = `oce_connections_${id}`;
     const ticket = randomBytes(32).toString("base64url");
     const expiresAt = Date.now() + lifetime * 1000;
-    this.store.startEnrollment(id, {
-      request,
-      connectorId,
-      expiresAt,
-      ticketHash: digest(ticket),
-    });
+    if (
+      !this.store.startEnrollment(id, {
+        request,
+        connectorId,
+        expiresAt,
+        ticketHash: digest(ticket),
+      })
+    ) {
+      redirect(response, oauthFailure(request, "temporarily_unavailable"));
+      return;
+    }
     const signal = AbortSignal.timeout(45_000);
     const configuredId = Object.hasOwn(this.authConfigIds, connectorId)
       ? this.authConfigIds[connectorId]
@@ -329,9 +335,12 @@ export class ConnectionsOAuth {
     const callback = callbackQuery.safeParse(parameters(url.searchParams));
     if (!callback.success)
       throw new HttpError(400, "provider_session_required");
-    await this.queue.run(id, async () => {
-      const pending = this.store.enrollment(id, ticket);
-      if (!pending?.binding) throw new HttpError(409, "enrollment_unavailable");
+    const pending = this.store.enrollment(id, ticket);
+    if (!pending?.binding) throw new HttpError(409, "enrollment_unavailable");
+    if (this.#verifying.has(id))
+      throw new HttpError(409, "enrollment_in_progress");
+    this.#verifying.add(id);
+    try {
       const { binding, connectorId, request, ticketHash } = pending;
       const client = this.#clients.get(request.client_id);
       if (
@@ -377,7 +386,9 @@ export class ConnectionsOAuth {
       if (typeof location !== "string")
         throw new HttpError(500, "server_error");
       redirect(res, location);
-    });
+    } finally {
+      this.#verifying.delete(id);
+    }
   }
 
   async exchange(request: IncomingMessage, response: ServerResponse) {
