@@ -213,10 +213,29 @@ await test(
       outcome,
     );
 
-    assert.equal(
-      (await revoke(service.origin, github.refresh_token)).status,
-      200,
-    );
+    assert.equal((await get("/v1/actions")).status, 200);
+    const inFlight = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    provider.onDispatch = async () => {
+      inFlight.resolve();
+      await finish.promise;
+    };
+    const dispatch = run({ ...proposed, requestId: randomUUID() });
+    await inFlight.promise;
+    const queued = run({ ...proposed, requestId: randomUUID() });
+    try {
+      assert.equal(
+        (await revoke(service.origin, github.refresh_token)).status,
+        200,
+      );
+      assert.equal((await get(`/v1/calls?requestId=${requestId}`)).status, 401);
+    } finally {
+      finish.resolve();
+      provider.onDispatch = undefined;
+    }
+    assert.equal((await dispatch).status, 401);
+    assert.equal((await queued).status, 401);
+    assert.equal(provider.executions.length, 6);
     assert.equal((await get("/v1/actions")).status, 401);
     assert.equal((await get("/v1/actions", slack.access_token)).status, 200);
   },

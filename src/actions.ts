@@ -134,7 +134,8 @@ export class Actions {
       this.store.pruneResults();
       await this.oauth.access(header);
       const dispatch = { actionId, requestId, version, requestHash };
-      this.store.claimDispatch(grant.id, dispatch);
+      if (!this.store.claimDispatch(grant.id, dispatch))
+        throw new HttpError(401, "invalid_token");
       let completion: Completion;
       try {
         const response = await this.provider.execute(
@@ -170,6 +171,7 @@ export class Actions {
       this.store.finishDispatch(grant.id, requestId, completion);
       return { ...dispatch, ...completion };
     });
+    await this.oauth.access(header);
     send(res, 200, presentReceipt(receipt));
   }
 

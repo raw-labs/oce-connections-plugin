@@ -80,8 +80,10 @@ if Composio's setup expires.
 access token and a 30-day rotating refresh token. Code and token values are
 stored as hashes. Losing a refresh exchange after consumption can require
 reconnecting. `POST /oauth/revoke` revokes the selected saved connection's
-token family without affecting another enrollment. OCE owns detaching an
-Agent from a saved connection. OAuth revocation retires the service grant.
+token family without affecting another enrollment. Revocation takes effect
+immediately. An action already dispatched to the provider may finish. Queued
+actions and receipt reads require an active grant. OCE owns detaching an
+Agent from a saved connection.
 Composio project administration handles deletion of the underlying connected
 account, including orphaned or abandoned enrollments.
 

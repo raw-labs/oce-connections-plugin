@@ -419,11 +419,7 @@ export class ConnectionsOAuth {
     if (!input.success) throw new HttpError(400, "invalid_request");
     const { client_id } = this.authenticateClient(request, input.data);
     const id = this.store.revocationTarget(client_id, input.data.token);
-    if (id) {
-      await this.queue.run(id, async () => {
-        this.store.revokeGrant(id, client_id);
-      });
-    }
+    if (id) this.store.revokeGrant(id, client_id);
     send(response, 200);
   }
 

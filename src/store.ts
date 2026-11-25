@@ -323,19 +323,23 @@ export class Store {
       "requestId" | "requestHash" | "actionId" | "version"
     >,
   ) {
-    this.#db
-      .prepare(
-        `INSERT INTO receipts (grant_id, request_id, request_hash,
-      action_id, version, status, expires_at) VALUES (?, ?, ?, ?, ?, 'dispatching', ?)`,
-      )
-      .run(
-        grantId,
-        receipt.requestId,
-        receipt.requestHash,
-        receipt.actionId,
-        receipt.version,
-        Date.now() + receiptRetention,
-      );
+    return (
+      this.#db
+        .prepare(
+          `INSERT INTO receipts (grant_id, request_id, request_hash, action_id,
+          version, status, expires_at)
+          SELECT id, ?, ?, ?, ?, 'dispatching', ? FROM grants
+          WHERE id = ? AND revoked_at IS NULL`,
+        )
+        .run(
+          receipt.requestId,
+          receipt.requestHash,
+          receipt.actionId,
+          receipt.version,
+          Date.now() + receiptRetention,
+          grantId,
+        ).changes === 1
+    );
   }
 
   finishDispatch(grantId: string, requestId: string, completion: Completion) {
