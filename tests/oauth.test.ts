@@ -22,6 +22,34 @@ await test(
     const provider = new ComposioFixture();
     const { origin, logs } = await fixture(t, provider.handle);
 
+    const metadata = await fetch(
+      origin + "/.well-known/oauth-authorization-server",
+    );
+    assert.equal(metadata.status, 200);
+    assert.match(
+      metadata.headers.get("content-type") ?? "",
+      /^application\/json/,
+    );
+    assert.deepEqual(await metadata.json(), {
+      issuer: origin,
+      authorization_endpoint: origin + "/oauth/authorize",
+      token_endpoint: origin + "/oauth/token",
+      revocation_endpoint: origin + "/oauth/revoke",
+      scopes_supported: ["connections"],
+      response_types_supported: ["code"],
+      response_modes_supported: ["query"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: [
+        "client_secret_basic",
+        "client_secret_post",
+      ],
+      revocation_endpoint_auth_methods_supported: [
+        "client_secret_basic",
+        "client_secret_post",
+      ],
+    });
+
     const badRedirect = authorization(origin, "github").url;
     badRedirect.searchParams.set(
       "redirect_uri",

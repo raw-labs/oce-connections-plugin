@@ -1,5 +1,6 @@
 import { createServer, type ServerOptions } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import oauthProtocol from "../assets/oauth.json" with { type: "json" };
 import { Actions } from "./actions.js";
 import { ComposioCatalog, packagedCatalog } from "./catalog.js";
 import { HttpError, send } from "./http.js";
@@ -89,11 +90,34 @@ export function connectionsServer(options: {
           send(response, 200, { status: "ok" });
           return;
         }
-        const connector = /^\/oauth\/authorize\/([a-z0-9_]{1,80})$/.exec(
-          url.pathname,
-        )?.[1];
-        if (connector) {
-          await oauth.authorize(connector, url, response);
+        if (url.pathname === oauthProtocol.metadata && !url.search) {
+          send(response, 200, {
+            issuer: options.origin,
+            authorization_endpoint: new URL(
+              oauthProtocol.authorize,
+              options.origin,
+            ).href,
+            token_endpoint: new URL(oauthProtocol.token, options.origin).href,
+            revocation_endpoint: new URL(oauthProtocol.revoke, options.origin)
+              .href,
+            scopes_supported: [oauthProtocol.scope],
+            response_types_supported: ["code"],
+            response_modes_supported: ["query"],
+            grant_types_supported: ["authorization_code", "refresh_token"],
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: [
+              "client_secret_basic",
+              "client_secret_post",
+            ],
+            revocation_endpoint_auth_methods_supported: [
+              "client_secret_basic",
+              "client_secret_post",
+            ],
+          });
+          return;
+        }
+        if (url.pathname === oauthProtocol.authorize) {
+          await oauth.authorize(url, response);
           return;
         }
         const enrollment = /^\/oauth\/complete\/([a-f0-9-]{36})$/.exec(
@@ -109,11 +133,11 @@ export function connectionsServer(options: {
           await actions.call(request, response);
           return;
         }
-        if (url.pathname === "/oauth/token") {
+        if (url.pathname === oauthProtocol.token) {
           await oauth.exchange(request, response);
           return;
         }
-        if (url.pathname === "/oauth/revoke") {
+        if (url.pathname === oauthProtocol.revoke) {
           await oauth.revoke(request, response);
           return;
         }

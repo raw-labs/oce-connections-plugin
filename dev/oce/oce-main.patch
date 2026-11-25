@@ -1,0 +1,75 @@
+diff --git a/apps/controller/src/drivers/plugin/managed-catalog.ts b/apps/controller/src/drivers/plugin/managed-catalog.ts
+index a417674..ccd1a50 100644
+--- a/apps/controller/src/drivers/plugin/managed-catalog.ts
++++ b/apps/controller/src/drivers/plugin/managed-catalog.ts
+@@ -14,6 +14,7 @@ import {
+ import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
+ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+ import { exactDnsName } from "../credential-source-endpoint.ts";
++import { connectionsCliPolicies } from "./connections-dev-policy.ts";
+ import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
+ import { Type } from "typebox";
+ import { Check } from "typebox/value";
+@@ -305,7 +306,7 @@ export function deployableManagedMcpToolNames(
+ }
+ 
+ // CLI request semantics belong to each reviewed connector; the catalog owns iteration.
+-const cliCredentialPolicies = [googleWorkspaceCredentialPolicy];
++const cliCredentialPolicies = [googleWorkspaceCredentialPolicy, ...connectionsCliPolicies];
+ const cliCredentialPolicy = (install: ManagedCliInstall) =>
+   cliCredentialPolicies.find(({ packageName }) => packageName === install.packageName);
+ 
+diff --git a/apps/controller/src/drivers/sandbox/openshell-credential-policy.ts b/apps/controller/src/drivers/sandbox/openshell-credential-policy.ts
+index 72001ba..956251f 100644
+--- a/apps/controller/src/drivers/sandbox/openshell-credential-policy.ts
++++ b/apps/controller/src/drivers/sandbox/openshell-credential-policy.ts
+@@ -8,6 +8,7 @@ import {
+ import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
+ 
+ import { openShellProviderName } from "../../backends/openshell.ts";
++import { isConnectionsPlugin } from "../plugin/connections-dev-policy.ts";
+ import { managedMcpInstalls } from "../plugin/managed-catalog.ts";
+ import { managedMcpRule } from "./openshell-managed-mcp-policy.ts";
+ import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
+@@ -262,6 +263,17 @@ export function compileOpenShellCredentialPolicy(
+   readonly credentialRoutes: readonly OpenShellCredentialRoute[];
+   readonly publicRoutes: readonly OpenShellPublicRoute[];
+ } {
++  // This OpenShell baseline can substitute credentials on plaintext REST requests.
++  // Connections requires HTTPS-only substitution before a native binding may be installed.
++  if (
++    policy.bindings.some(
++      ({ consumer }) => consumer.kind === "plugin" && isConnectionsPlugin(consumer.pluginId),
++    )
++  ) {
++    throw new OpenShellSandboxConfigurationFailure(
++      "Connections requires HTTPS-only OpenShell credential substitution.",
++    );
++  }
+   const injections = new Map(
+     policy.injectionPolicies.map(({ bindingRef, allowedRequests }) => [
+       bindingRef,
+diff --git a/deploy/runtime/Dockerfile b/deploy/runtime/Dockerfile
+index 46c82c2..c63dabb 100644
+--- a/deploy/runtime/Dockerfile
++++ b/deploy/runtime/Dockerfile
+@@ -223,6 +223,11 @@ COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-googl
+ RUN echo 'cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+     && git apply /tmp/openclaw-google-worker-placeholder.patch
+ 
++# Connections dev overlay forwards only the bundled slots' opaque OpenShell markers.
++COPY deploy/runtime/oce-connections-worker.patch deploy/runtime/oce-connections-worker.sha256 /tmp/
++RUN (cd /tmp && sha256sum --check oce-connections-worker.sha256) \
++    && git apply /tmp/oce-connections-worker.patch
++
+ # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
+ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
+ RUN echo '1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+@@ -476,6 +481,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
+     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
+ 
+ COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
++COPY deploy/runtime/oce-connections-overlays/linux-${TARGETARCH}/ /
+ COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
+ 
+ COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/

@@ -1,0 +1,28 @@
+diff --git a/src/node-host/node-worker-environment.ts b/src/node-host/node-worker-environment.ts
+--- a/src/node-host/node-worker-environment.ts
++++ b/src/node-host/node-worker-environment.ts
+@@ -109,16 +109,23 @@ export function snapshotNodeWorkerEnv(
+   const googleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_GOG_ACCESS_TOKEN$/.test(
+     source.GOG_ACCESS_TOKEN ?? "",
+   );
++  const connectionsEnvironments = new Set<string>(__OCE_CONNECTIONS_ENVIRONMENTS__);
+   const retainedWindowsKeys = new Map<string, string>();
+   for (const [key, value] of Object.entries(source)) {
+     if (value === undefined) {
+       continue;
+     }
+     const normalized = windows ? key.toUpperCase() : key;
++    // The OCE launcher validates the Source alias before starting the worker.
++    const connectionsAlias = connectionsEnvironments.has(normalized)
++      ? /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(value)?.[1]
++      : undefined;
+     const allowed =
+       (windows ? WINDOWS_WORKER_ENV_KEYS : POSIX_WORKER_ENV_KEYS).has(normalized) ||
+       normalized.startsWith("LC_") ||
+-      (googleMarker && normalized === "GOG_ACCESS_TOKEN");
++      (googleMarker && normalized === "GOG_ACCESS_TOKEN") ||
++      (connectionsAlias !== undefined &&
++        (connectionsAlias === normalized || /^OCE_SOURCE_[A-F0-9]{24}$/.test(connectionsAlias)));
+     if (!allowed) {
+       continue;
+     }

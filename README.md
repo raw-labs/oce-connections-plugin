@@ -29,8 +29,8 @@ OAuth endpoints with a test client, and runs the native CLI. The controlled
 Composio backend provides two GitHub accounts and a Slack account. The suite
 checks exact account binding, unauthorized actions and overrides, refresh and
 revocation, credential handling, and restart and interrupted-dispatch recovery.
-It also builds Linux ARM64 and AMD64 dev overlays and tests the registered
-request policies. The tests need permission to listen on loopback. They use
+It also builds Linux ARM64 and AMD64 dev overlays and checks the generated
+request selectors and OAuth settings. The tests need permission to listen on loopback. They use
 temporary databases and a test CA, with ordinary HTTPS verification enabled.
 
 ## Run the HTTPS service
@@ -64,8 +64,12 @@ node dist/main.js .local/service.json
   process per database. Stop it before copying the file for backup. Treat the
   database as sensitive because it holds account references and action results.
 
-OCE starts enrollment at `GET /oauth/authorize/<connector>` with state and
-S256 PKCE. The service sets a browser ticket and starts Composio consent. On
+The configured HTTPS origin is the issuer. Connections publishes RFC 8414
+metadata at `/.well-known/oauth-authorization-server`. Every template uses
+`GET /oauth/authorize` and supplies its `connector` separately in OCE
+`authorizationParameters`. Connections checks the connector against the
+registered client before creating a browser ticket and starting Composio
+consent. OCE supplies state and S256 PKCE. On
 callback, it checks the browser ticket and reads the enrolled Composio account
 server-side. Only an active account matching the account ID, subject, toolkit
 and auth configuration can produce a code. The browser can retry the callback
@@ -127,8 +131,12 @@ Request IDs and outcomes remain so the service can refuse replays.
 
 See the [dev image and registration guide](dev/oce/README.md). The bundle
 includes the native Linux CLI, skill, manual OAuth templates, single-slot
-plugin registrations, and release-bound request policies. It targets a
-dedicated OpenClaw Harness on Kubernetes with OpenShell Bearer delivery.
+plugin registrations, and exact native HTTP request selectors. The dev overlay
+installs them into the pinned OCE checkout and builds the worker placeholder
+allowlist. The target is a dedicated OpenClaw Harness on Kubernetes with
+OpenShell Bearer delivery. The pinned OpenShell path cannot enforce HTTPS
+before substitution, so the overlay refuses Connections credential deployment
+until a qualified transport is available.
 
 The service starts with a fresh SQLite database. Existing Gateway plugin
 state stays in the predecessor and accounts are enrolled again through OCE.

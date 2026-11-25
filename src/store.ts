@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import oauthProtocol from "../assets/oauth.json" with { type: "json" };
 import { bindingSchema } from "./contracts.js";
 
 export const digest = (value: string) =>
@@ -13,7 +14,7 @@ export const authorizationSchema = z.strictObject({
   code_challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   code_challenge_method: z.literal("S256"),
   state: z.string().regex(/^[\x21-\x7e]{1,2048}$/),
-  scope: z.literal("connections").optional(),
+  scope: z.literal(oauthProtocol.scope).optional(),
 });
 export type Authorization = z.infer<typeof authorizationSchema>;
 

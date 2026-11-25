@@ -1,93 +1,110 @@
 # Connections in OCE dev images
 
-The first integration uses bundled dev assets and a dedicated OpenClaw
-Harness on Kubernetes with OpenShell. The test OAuth client can exercise the
-service independently. Build these assets without custom plugin import.
-
-The draft contracts used here are typed Sources and Connection Templates,
-saved-account Agent access, and native HTTP credential delivery. Custom
-plugin import is a later distribution option. [OCE #7010](https://github.com/openclaw/openclaw-enterprise/pull/7010)
+The bundled integration targets Dedicated OpenClaw on Kubernetes with
+OpenShell. OCE main supports manual OAuth templates and Credential Client
+registration. The dev overlay uses the staged native HTTP credential path
+introduced by #7097 and the saved account selection work in #4673. Plugin
+upload remains a later distribution path. [OCE #7097](https://github.com/openclaw/openclaw-enterprise/pull/7097)
 · [OCE #4673](https://github.com/openclaw/openclaw-enterprise/pull/4673)
-· [OCE #7097](https://github.com/openclaw/openclaw-enterprise/pull/7097)
 · [OCE #4734](https://github.com/openclaw/openclaw-enterprise/pull/4734)
+· [OpenClaw #203881](https://github.com/openclaw/openclaw/pull/203881)
 
-## Build the runtime overlay
+## Stage the bundle
 
-Copy [slots.example.json](slots.example.json) and set the issuer and distinct
-API DNS names. All API names can serve the same Connections process. Choose
-one slot for each account that an Agent can attach, including multiple for the
-same provider. The aliases keep the OpenShell credential selectors disjoint
-and each slot has its own placeholder.
+Copy [slots.example.json](slots.example.json) and set the HTTPS issuer and
+distinct API DNS names. All API names can serve the same Connections process.
+Choose one slot for each account an Agent may attach, including multiple
+accounts for the same provider. Each slot has its own placeholder and API host.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build:oce dev/oce/slots.example.json .local/oce-dev
 ```
 
-Use an empty output directory. The command builds both Linux architectures
-with the pinned Go toolchain. It writes runtime filesystem overlays, a
-managed catalog fragment, manual OAuth templates, and the request policy
-registration inputs. For an ARM64 dev image:
+Use an empty output directory. The stage builds both Linux architectures with
+the pinned Go toolchain and writes filesystem overlays, managed catalog
+packages, manual Connection Templates, and OAuth Credential Client examples.
+
+## Apply the local OCE overlay
+
+Use a clean, disposable checkout of OCE commit
+`03f8e1f2c5d6d970e3d24bb25e96aebd475c30ea`. Run this command from the Connections
+repository:
+
+```sh
+pnpm install:oce .local/oce-dev /absolute/path/to/oce-dev-checkout
+```
+
+The installer applies [the pinned dev patch](oce-main.patch), merges the
+catalog entries, and registers one reviewed CLI policy per release with OCE's
+managed catalog. The controller matches the saved OAuth Source to its
+original template version, connector, issuer, scope and exact slot host.
+Its deployment description registers the executable and four exact HTTPS API
+method/path pairs with the staged native policy. The runtime recipe installs
+the same CLI and skill in the image, and applies a worker environment patch
+that forwards only the bundled slots' OpenShell placeholders. It accepts
+the native Source alias that OCE validates during Harness launch.
+
+With the patched checkout's dependencies installed, verify its controller
+registration from the Connections repository:
+
+```sh
+node dev/oce/verify-overlay.mjs .local/oce-dev /absolute/path/to/oce-dev-checkout
+```
+
+Build the Controller and runtime from that patched checkout using OCE's dev
+image build. Use the patched runtime image for the Gateway and Dedicated
+Harness. The executable lives at
+`/usr/local/lib/oce/plugins/connections/bin/oce-connections` and is linked
+on `PATH`. The Gateway loads the skill from its managed plugin catalog.
+The CLI uses the fixed slot URLs in `/etc/oce-connections/slots.json` and
+the OpenShell trust bundle.
+
+For a CLI and image layout smoke test, the [overlay Dockerfile](Dockerfile)
+can also layer the stage onto an existing runtime image:
 
 ```sh
 docker buildx build --load --platform linux/arm64 \
   --build-context connections-overlay=.local/oce-dev/runtime/linux-arm64 \
   --build-arg OCE_RUNTIME_IMAGE=YOUR_OCE_RUNTIME_IMAGE \
   -f dev/oce/Dockerfile -t oce-runtime:connections-dev dev/oce
-docker run --rm --entrypoint /usr/local/bin/oce-connections \
-  oce-runtime:connections-dev help
+docker run --rm --entrypoint /usr/local/bin/oce-connections oce-runtime:connections-dev help
 ```
 
-Use the `linux-amd64` overlay for AMD64. Use the image for the OCE Gateway and
-dedicated Harness runtime. The executable is installed at
-`/usr/local/lib/oce/plugins/connections/bin/oce-connections` and linked on
-`PATH`. Network policy matches the native executable's resolved path.
-The image fixes slot URLs in `/etc/oce-connections/slots.json`. The CLI reads
-the assigned placeholder from the slot's environment variable and sends it
-as `Authorization: Bearer`. OpenShell's trust bundle must be available to the
-native CLI. No Composio credential belongs in these images.
+Use `linux-amd64` for AMD64. This smoke test exercises the image layout. The
+patched Controller and worker build provide the managed integration.
 
-## Wire the controller for the pilot
+## Register and connect
 
-The current draft's managed runtime still specializes CLI installation and
-request-guard selection for Google Workspace. Its native worker environment
-patch forwards the Google placeholder specifically. The generated assets
-require OCE's managed CLI registration and scoped worker placeholder
-propagation to admit Connections before this flow can run in a live
-deployment. They have been prepared for those inputs. This repository
-contains the service and the dev overlay. See the upstream
-[managed request registry](https://github.com/openclaw/openclaw-enterprise/blob/9ee73bafa34d54d0081e3fe1437c0f302ec1821f/apps/controller/src/drivers/plugin/managed-request-policies.ts)
-and [worker environment patch](https://github.com/openclaw/openclaw-enterprise/blob/34cb490338766bb45ee3d9f6da13a84a6daab910/deploy/runtime/openclaw-google-worker-placeholder.patch).
+1. In OCE, register the generated `credential-clients/<slot>.json` as an
+   OAuth Credential Client with a write-only secret. Current OCE main
+   requires the `tokenUrl` on the client as well as the template. If using
+   #7384, enter the endpoints on the template and use its issuer metadata
+   verification. Configure the same client ID and secret in the Connections
+   service with the exact callback URI OCE shows and that slot's connector.
+   [Current OCE configuration](https://github.com/openclaw/openclaw-enterprise/blob/03f8e1f2c5d6d970e3d24bb25e96aebd475c30ea/docs/reference/connection-templates.md#register-a-client)
+   · [OCE #7384](https://github.com/openclaw/openclaw-enterprise/pull/7384)
+2. Create each generated `connection-templates/<slot>.json` in OCE and
+   choose its matching client. The canonical issuer metadata and all templates
+   share `/oauth/authorize`, `/oauth/token` and `/oauth/revoke`. The template's
+   `authorizationParameters.connector` selects the toolkit. The Harness
+   request policy uses the slot's separate API alias and the action routes.
+3. Start consent in Console, save the connection and select it in the
+   matching plugin's `account` slot. Include the slot name in the Agent's
+   instructions.
 
-1. Include the generated `catalog/` packages in OCE's managed catalog and merge
-   `marketplace.fragment.json` into its entries. Use the release digest and
-   binary and skill digests to qualify the dev image. Every registration
-   declares one `account` credential slot and Bearer delivery to the Harness.
-2. Register the generated `request-policy.mjs` with the OCE managed
-   `releasedPolicies` map by calling
-   `registerConnectionsRequestPolicies(releasedPolicies, registrations)`
-   before computing the advertised guard version. Use the generated
-   release SHA as the binding ID and the slot's `requestScope` as its binding
-   config. Use `deploymentNetworks.credential` in the admitted network and
-   injection rules. The registration allows only four method and path
-   combinations on that slot's HTTPS origin. Its guard checks the
-   normalized headers, query and call envelope. A live deployment requires
-   the registered guard and its fail-closed HTTPS enforcement.
-3. In OCE, create each generated `connection-templates/<slot>.json` as a manual
-   OAuth template. Register its generated `clientId` as a confidential client
-   with `client_secret_basic`. Configure that same client in the Connections
-   service with the exact redirect URI OCE returns, the same secret, and only
-   that template's connector. The issuer owns enrollment, refresh and
-   revocation endpoints. Only the per-slot API alias is admitted for
-   credential delivery.
-4. Start consent from each template in OCE, save the connections, and attach
-   each saved account to its corresponding plugin's `account` slot. Include
-   the slot names in the Agent's deployment instructions. Validate that the
-   worker receives each placeholder, that OpenShell replaces it only for
-   the matched CLI request, and that one Agent can use the assigned slots
-   independently. The fixture suite tests policy decisions and application
-   isolation. Live OpenShell delivery requires the combined OCE environment.
+## Live transport requirement
 
-The same CLI and skill bytes are reused for every slot. The only per-slot
-inputs are the catalog entry, its selected account, the template, the
-placeholder name and its HTTPS route.
+At the pinned revision, OCE documents that the native OpenShell path can
+substitute credentials into matching plaintext requests. The dev patch
+refuses a Connections credential binding at deployment policy compilation,
+before Provider attachment. Qualification must show that the selected
+OpenShell transport refuses plaintext before credential substitution,
+independently of the CLI's TLS settings and the destination port.
+[OCE transport limitation](https://github.com/openclaw/openclaw-enterprise/blob/03f8e1f2c5d6d970e3d24bb25e96aebd475c30ea/docs/reference/credential-sources.md#implementation-status)
+
+After qualifying that transport, verify Console Connect, slot selection,
+deployment, CLI execution, renewal after token expiry, and denial after the
+Agent binding is removed. Removing the Agent binding exercises OCE's
+delivery authority. Retiring the saved OAuth Source exercises service
+revocation separately.

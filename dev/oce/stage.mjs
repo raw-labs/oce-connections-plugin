@@ -11,12 +11,13 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import oauthProtocol from "../../assets/oauth.json" with { type: "json" };
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const releaseRoot = "/usr/local/lib/oce/plugins/connections";
 const binary = `${releaseRoot}/bin/oce-connections`;
 const skill = "connections";
-const scope = "connections";
+const { scope } = oauthProtocol;
 const architectures = ["amd64", "arm64"];
 const routes = [
   ["GET", "/v1/actions"],
@@ -137,14 +138,13 @@ async function stage(settingsFile, output) {
   }
 
   const registrations = [];
-  const marketplace = [];
   const catalog = join(output, "catalog");
   for (const { name, connector, label, origin } of slots) {
     const packageName = `oce-connections-${name}`;
     const id = `occ-plugin:connections-${name}`;
     const host = new URL(origin).hostname;
     const env = `OCE_CONNECTIONS_${name.toUpperCase().replaceAll("-", "_")}_TOKEN`;
-    const tokenEndpoint = `${issuer}/oauth/token`;
+    const tokenEndpoint = new URL(oauthProtocol.token, issuer).href;
     const release = {
       release: `connections-${version}-${name}`,
       placement: {
@@ -190,16 +190,25 @@ async function stage(settingsFile, output) {
     });
     const releaseSha256 = await writeJson(join(dir, releasePath), release);
     await copy(skillFile, join(dir, "skills", skill, "SKILL.md"));
-    marketplace.push({ name: packageName, source: `./${packageName}` });
     await writeJson(join(output, "connection-templates", `${name}.json`), {
       displayName: label,
       mode: "manual",
       issuer,
-      authorizationUrl: `${issuer}/oauth/authorize/${connector}`,
+      authorizationUrl: new URL(oauthProtocol.authorize, issuer).href,
+      authorizationParameters: { connector },
       tokenUrl: tokenEndpoint,
-      revocationUrl: `${issuer}/oauth/revoke`,
+      revocationUrl: new URL(oauthProtocol.revoke, issuer).href,
       scopes: [scope],
       destinations: [{ host, port: 443, path: "/v1/**" }],
+    });
+    await writeJson(join(output, "credential-clients", `${name}.json`), {
+      kind: "oauth2",
+      displayName: label,
+      issuer,
+      tokenUrl: tokenEndpoint,
+      revocationUrl: new URL(oauthProtocol.revoke, issuer).href,
+      clientId: packageName,
+      tokenEndpointAuthMethod: "client_secret_basic",
     });
     registrations.push({
       pluginId: `${id}@${version}`,
@@ -209,13 +218,8 @@ async function stage(settingsFile, output) {
       host,
       connector,
       environment: env,
-      clientId: packageName,
-      requestScope: JSON.stringify({
-        host,
-        port: 443,
-        path: "/v1/**",
-        scopes: [scope],
-      }),
+      authorizationUrl: new URL(oauthProtocol.authorize, issuer).href,
+      scope,
       deploymentNetworks: {
         networkOnly: [],
         credential: routes.map(([method, path]) => ({
@@ -233,14 +237,7 @@ async function stage(settingsFile, output) {
     });
   }
 
-  await writeJson(join(output, "marketplace.fragment.json"), {
-    plugins: marketplace,
-  });
   await writeJson(join(output, "registrations.json"), registrations);
-  await copy(
-    new URL("./request-policy.mjs", import.meta.url),
-    join(output, "request-policy.mjs"),
-  );
   for (const arch of architectures) {
     const overlayCatalog = join(
       output,

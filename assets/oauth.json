@@ -1,0 +1,7 @@
+{
+  "metadata": "/.well-known/oauth-authorization-server",
+  "authorize": "/oauth/authorize",
+  "token": "/oauth/token",
+  "revoke": "/oauth/revoke",
+  "scope": "connections"
+}

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readlink, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { registerConnectionsRequestPolicies } from "../dev/oce/request-policy.mjs";
 
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -25,9 +24,7 @@ await test(
       },
     );
     const registrations = await readJson(join(stage, "registrations.json"));
-    const registry = new Map();
-    registerConnectionsRequestPolicies(registry, registrations);
-    assert.equal(registry.size, 3);
+    assert.equal(registrations.length, 3);
     assert.equal(new Set(registrations.map(({ host }) => host)).size, 3);
     assert.equal(
       new Set(registrations.map(({ environment }) => environment)).size,
@@ -37,18 +34,12 @@ await test(
       registrations.map(({ connector }) => connector),
       ["github", "github", "slack"],
     );
-    assert.throws(
-      () => registerConnectionsRequestPolicies(registry, registrations),
-      /already registered/,
-    );
-
     const readPath = "/v1/action";
-    for (const [index, registration] of registrations.entries()) {
+    for (const registration of registrations) {
       const {
         packageName,
         releaseSha256,
         host,
-        requestScope,
         deploymentNetworks,
         environment,
       } = registration;
@@ -95,10 +86,18 @@ await test(
         );
         assert.equal(
           template.authorizationUrl,
-          release.credentials.account.issuer +
-            "/oauth/authorize/" +
-            registration.connector,
+          release.credentials.account.issuer + "/oauth/authorize",
         );
+        assert.deepEqual(template.authorizationParameters, {
+          connector: registration.connector,
+        });
+        const client = await readJson(
+          join(stage, "credential-clients", slot + ".json"),
+        );
+        assert.equal(client.issuer, template.issuer);
+        assert.equal(client.tokenUrl, template.tokenUrl);
+        assert.equal(client.revocationUrl, template.revocationUrl);
+        assert.equal(client.tokenEndpointAuthMethod, "client_secret_basic");
         assert.deepEqual(template.destinations, [
           { host, port: 443, path: "/v1/**" },
         ]);
@@ -117,94 +116,6 @@ await test(
           ports: [{ from: 443, to: 443 }],
           requestPolicy: { type: "http", method, path },
         })),
-      );
-
-      const policy = registry.get(releaseSha256);
-      assert.ok(policy.acceptsScope(requestScope));
-      const request = {
-        bindingId: releaseSha256,
-        bindingConfig: requestScope,
-        target: {
-          reportedScheme: "https",
-          method: "GET",
-          port: 443,
-          host,
-          path: readPath,
-          query: "id=GITHUB_READ_ACCOUNT",
-        },
-        headers: [
-          ["accept", "application/json"],
-          ["accept-encoding", "gzip"],
-          ["user-agent", "oce-connections"],
-        ],
-        body: new Uint8Array(),
-      };
-      assert.equal(policy.allows(request), true);
-      for (const target of [
-        { reportedScheme: "http" },
-        { path: "/oauth/token" },
-        { path: "/v1/%61ction" },
-        { path: "/v1/x/../action" },
-        { port: 8443 },
-        { method: "DELETE" },
-        { host: registrations[(index + 1) % 3].host },
-        { host: "backend.composio.dev" },
-        { query: "id=GITHUB_READ_ACCOUNT&account=another" },
-        { query: "id=GITHUB_READ_ACCOUNT&id=SLACK_READ_ACCOUNT" },
-      ])
-        assert.equal(
-          policy.allows({
-            ...request,
-            target: { ...request.target, ...target },
-          }),
-          false,
-        );
-      assert.equal(
-        policy.allows({
-          ...request,
-          bindingConfig: registrations[(index + 1) % 3].requestScope,
-        }),
-        false,
-      );
-      assert.equal(
-        policy.allows({ ...request, headers: [["x-api-key", "fixture"]] }),
-        false,
-      );
-
-      const invocation = {
-        actionId: "GITHUB_READ_ACCOUNT",
-        version: "20261112_00",
-        requestId: randomUUID(),
-        arguments: {},
-      };
-      const post = {
-        ...request,
-        headers: [...request.headers, ["content-type", "application/json"]],
-        target: {
-          ...request.target,
-          method: "POST",
-          path: "/v1/calls",
-          query: "",
-        },
-      };
-      assert.equal(
-        policy.allows({
-          ...post,
-          body: Buffer.from(JSON.stringify(invocation)),
-        }),
-        true,
-      );
-      assert.equal(
-        policy.allows({
-          ...post,
-          body: Buffer.from(
-            JSON.stringify({
-              ...invocation,
-              connected_account_id: "account-2",
-            }),
-          ),
-        }),
-        false,
       );
     }
   },

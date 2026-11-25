@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import OAuth2Server from "@node-oauth/oauth2-server";
 import { z } from "zod";
+import oauthProtocol from "../assets/oauth.json" with { type: "json" };
 import type { ComposioCatalog } from "./catalog.js";
 import { body, HttpError, parameters, redirect, send } from "./http.js";
 import type { Queue } from "./queue.js";
@@ -19,7 +20,7 @@ export interface ClientRegistration {
   redirectUris: string[];
   connectorIds: string[];
 }
-const scope = "connections";
+const { scope } = oauthProtocol;
 const lifetime = 10 * 60;
 const oauthCredential = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
 const clientFields = {
@@ -247,9 +248,15 @@ export class ConnectionsOAuth {
     return { client_id: id, client_secret: secret };
   }
 
-  async authorize(connectorId: string, url: URL, response: ServerResponse) {
-    const input = authorizationSchema.safeParse(parameters(url.searchParams));
-    if (!input.success) throw new HttpError(400, "invalid_request");
+  async authorize(url: URL, response: ServerResponse) {
+    const { connector: connectorId, ...query } = parameters(url.searchParams);
+    const input = authorizationSchema.safeParse(query);
+    if (
+      !connectorId ||
+      !/^[a-z0-9_]{1,80}$/.test(connectorId) ||
+      !input.success
+    )
+      throw new HttpError(400, "invalid_request");
     const request = input.data;
     const client = this.#clients.get(request.client_id);
     if (!client?.redirectUris.includes(request.redirect_uri))

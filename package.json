@@ -15,6 +15,7 @@
   "files": [
     "dist",
     "assets/catalog.json",
+    "assets/oauth.json",
     "skills",
     "dev",
     "README.md",
@@ -43,7 +44,8 @@
     "format": "prettier --write .",
     "artifact": "pnpm build && mkdir -p .local && npm pack --pack-destination .local",
     "inspect:package": "node scripts/inspect-package.mjs",
-    "build:oce": "node dev/oce/stage.mjs"
+    "build:oce": "node dev/oce/stage.mjs",
+    "install:oce": "node dev/oce/install-overlay.mjs"
   },
   "repository": {
     "type": "git",

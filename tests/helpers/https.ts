@@ -170,8 +170,9 @@ async function listen(server: Server | ReturnType<typeof tcpServer>) {
 export function authorization(origin: string, connector: string) {
   const verifier = randomBytes(32).toString("base64url");
   const state = randomBytes(16).toString("base64url");
-  const url = new URL(`/oauth/authorize/${connector}`, origin);
+  const url = new URL("/oauth/authorize", origin);
   url.search = new URLSearchParams({
+    connector,
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
